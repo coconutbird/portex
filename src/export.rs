@@ -237,6 +237,211 @@ impl ExportTable {
     pub fn find_by_ordinal(&self, ordinal: u32) -> Option<&ExportedFunction> {
         self.exports.iter().find(|e| e.ordinal == ordinal)
     }
+
+    /// Add an exported function by RVA.
+    pub fn add_export(&mut self, name: Option<&str>, rva: u32) {
+        let ordinal = if self.exports.is_empty() {
+            self.directory.base
+        } else {
+            self.exports.iter().map(|e| e.ordinal).max().unwrap_or(self.directory.base) + 1
+        };
+        self.exports.push(ExportedFunction {
+            ordinal,
+            name: name.map(|s| s.to_string()),
+            address: ExportAddress::Rva(rva),
+        });
+    }
+
+    /// Add a forwarded export.
+    pub fn add_forwarder(&mut self, name: Option<&str>, forward_to: &str) {
+        let ordinal = if self.exports.is_empty() {
+            self.directory.base
+        } else {
+            self.exports.iter().map(|e| e.ordinal).max().unwrap_or(self.directory.base) + 1
+        };
+        self.exports.push(ExportedFunction {
+            ordinal,
+            name: name.map(|s| s.to_string()),
+            address: ExportAddress::Forwarder(forward_to.to_string()),
+        });
+    }
+
+    /// Set the DLL name.
+    pub fn set_dll_name(&mut self, name: &str) {
+        self.dll_name = name.to_string();
+    }
+
+    /// Set the ordinal base.
+    pub fn set_base(&mut self, base: u32) {
+        self.directory.base = base;
+    }
+}
+
+/// Builder for serializing export tables to section data.
+#[derive(Debug)]
+pub struct ExportTableBuilder {
+    /// Base RVA where the export section will be placed.
+    pub base_rva: u32,
+}
+
+impl ExportTableBuilder {
+    /// Create a new builder.
+    pub fn new(base_rva: u32) -> Self {
+        Self { base_rva }
+    }
+
+    /// Calculate the total size needed for the export section.
+    pub fn calculate_size(&self, table: &ExportTable) -> usize {
+        if table.exports.is_empty() && table.dll_name.is_empty() {
+            return 0;
+        }
+
+        // Export directory
+        let directory_size = ExportDirectory::SIZE;
+
+        // Export Address Table (4 bytes per function)
+        let eat_size = table.exports.len() * 4;
+
+        // Count named exports
+        let named_count = table.exports.iter().filter(|e| e.name.is_some()).count();
+
+        // Name Pointer Table (4 bytes per named export)
+        let name_ptr_size = named_count * 4;
+
+        // Ordinal Table (2 bytes per named export)
+        let ordinal_table_size = named_count * 2;
+
+        // DLL name
+        let dll_name_size = table.dll_name.len() + 1;
+
+        // Function names
+        let mut names_size = 0;
+        for export in &table.exports {
+            if let Some(name) = &export.name {
+                names_size += name.len() + 1;
+            }
+        }
+
+        // Forwarder strings
+        let mut forwarders_size = 0;
+        for export in &table.exports {
+            if let ExportAddress::Forwarder(fwd) = &export.address {
+                forwarders_size += fwd.len() + 1;
+            }
+        }
+
+        directory_size + eat_size + name_ptr_size + ordinal_table_size + dll_name_size + names_size + forwarders_size
+    }
+
+    /// Build the export section data and return (section_data, export_size).
+    pub fn build(&self, table: &ExportTable) -> (Vec<u8>, u32) {
+        if table.exports.is_empty() && table.dll_name.is_empty() {
+            return (Vec::new(), 0);
+        }
+
+        let total_size = self.calculate_size(table);
+        let mut data = vec![0u8; total_size];
+
+        // Calculate offsets
+        let directory_offset = 0usize;
+        let eat_offset = ExportDirectory::SIZE;
+        let eat_size = table.exports.len() * 4;
+
+        let named_exports: Vec<_> = table.exports.iter()
+            .enumerate()
+            .filter(|(_, e)| e.name.is_some())
+            .collect();
+        let named_count = named_exports.len();
+
+        let name_ptr_offset = eat_offset + eat_size;
+        let name_ptr_size = named_count * 4;
+
+        let ordinal_table_offset = name_ptr_offset + name_ptr_size;
+        let ordinal_table_size = named_count * 2;
+
+        let dll_name_offset = ordinal_table_offset + ordinal_table_size;
+        let dll_name_size = table.dll_name.len() + 1;
+
+        let strings_offset = dll_name_offset + dll_name_size;
+
+        // Write DLL name
+        let dll_name_rva = self.base_rva + dll_name_offset as u32;
+        data[dll_name_offset..dll_name_offset + table.dll_name.len()]
+            .copy_from_slice(table.dll_name.as_bytes());
+
+        // Write function names and track their RVAs
+        let mut string_pos = strings_offset;
+        let mut name_rvas: Vec<(usize, u32)> = Vec::new(); // (index_in_exports, rva)
+
+        for (idx, export) in table.exports.iter().enumerate() {
+            if let Some(name) = &export.name {
+                let name_rva = self.base_rva + string_pos as u32;
+                data[string_pos..string_pos + name.len()].copy_from_slice(name.as_bytes());
+                string_pos += name.len() + 1;
+                name_rvas.push((idx, name_rva));
+            }
+        }
+
+        // Write forwarder strings and build EAT
+        let mut eat_entries: Vec<u32> = Vec::with_capacity(table.exports.len());
+        for export in &table.exports {
+            match &export.address {
+                ExportAddress::Rva(rva) => {
+                    eat_entries.push(*rva);
+                }
+                ExportAddress::Forwarder(fwd) => {
+                    let fwd_rva = self.base_rva + string_pos as u32;
+                    data[string_pos..string_pos + fwd.len()].copy_from_slice(fwd.as_bytes());
+                    string_pos += fwd.len() + 1;
+                    eat_entries.push(fwd_rva);
+                }
+            }
+        }
+
+        // Write Export Address Table (EAT)
+        for (i, rva) in eat_entries.iter().enumerate() {
+            let offset = eat_offset + i * 4;
+            data[offset..offset + 4].copy_from_slice(&rva.to_le_bytes());
+        }
+
+        // Sort named exports by name for binary search compatibility
+        let mut sorted_names: Vec<_> = name_rvas.iter()
+            .map(|(idx, rva)| {
+                let name = table.exports[*idx].name.as_ref().unwrap();
+                (name.as_str(), *idx, *rva)
+            })
+            .collect();
+        sorted_names.sort_by(|a, b| a.0.cmp(b.0));
+
+        // Write Name Pointer Table and Ordinal Table
+        for (i, (_, export_idx, name_rva)) in sorted_names.iter().enumerate() {
+            // Name pointer
+            let npt_offset = name_ptr_offset + i * 4;
+            data[npt_offset..npt_offset + 4].copy_from_slice(&name_rva.to_le_bytes());
+
+            // Ordinal (index into EAT)
+            let ord_offset = ordinal_table_offset + i * 2;
+            data[ord_offset..ord_offset + 2].copy_from_slice(&(*export_idx as u16).to_le_bytes());
+        }
+
+        // Build and write directory
+        let directory = ExportDirectory {
+            characteristics: 0,
+            time_date_stamp: table.directory.time_date_stamp,
+            major_version: table.directory.major_version,
+            minor_version: table.directory.minor_version,
+            name_rva: dll_name_rva,
+            base: table.directory.base,
+            number_of_functions: table.exports.len() as u32,
+            number_of_names: named_count as u32,
+            address_of_functions: self.base_rva + eat_offset as u32,
+            address_of_names: if named_count > 0 { self.base_rva + name_ptr_offset as u32 } else { 0 },
+            address_of_name_ordinals: if named_count > 0 { self.base_rva + ordinal_table_offset as u32 } else { 0 },
+        };
+        directory.write(&mut data[directory_offset..]).ok();
+
+        (data, total_size as u32)
+    }
 }
 
 #[cfg(test)]
@@ -267,6 +472,59 @@ mod tests {
         let bytes = original.to_bytes();
         let parsed = ExportDirectory::parse(&bytes).unwrap();
         assert_eq!(original, parsed);
+    }
+
+    #[test]
+    fn test_export_table_builder_roundtrip() {
+        // Create an export table
+        let mut table = ExportTable::default();
+        table.set_dll_name("test.dll");
+        table.set_base(1);
+        table.add_export(Some("FunctionA"), 0x1000);
+        table.add_export(Some("FunctionB"), 0x2000);
+        table.add_export(None, 0x3000); // Export by ordinal only
+
+        assert_eq!(table.exports.len(), 3);
+        assert_eq!(table.dll_name, "test.dll");
+
+        // Build the section
+        let base_rva = 0x4000u32;
+        let builder = ExportTableBuilder::new(base_rva);
+        let size = builder.calculate_size(&table);
+        assert!(size > 0);
+
+        let (data, export_size) = builder.build(&table);
+        assert!(!data.is_empty());
+        assert!(export_size > 0);
+
+        // Parse the built data back
+        let read_fn = |rva: u32, len: usize| -> Option<Vec<u8>> {
+            if rva < base_rva {
+                return None;
+            }
+            let offset = (rva - base_rva) as usize;
+            if offset >= data.len() {
+                return None;
+            }
+            let available = (data.len() - offset).min(len);
+            Some(data[offset..offset + available].to_vec())
+        };
+
+        let parsed = ExportTable::parse(base_rva, export_size, read_fn).unwrap();
+        assert_eq!(parsed.dll_name, "test.dll");
+        assert_eq!(parsed.exports.len(), 3);
+
+        // Verify named exports
+        let func_a = parsed.find_by_name("FunctionA");
+        assert!(func_a.is_some());
+        if let ExportAddress::Rva(rva) = &func_a.unwrap().address {
+            assert_eq!(*rva, 0x1000);
+        } else {
+            panic!("Expected RVA export");
+        }
+
+        let func_b = parsed.find_by_name("FunctionB");
+        assert!(func_b.is_some());
     }
 }
 

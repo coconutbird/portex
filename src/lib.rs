@@ -41,8 +41,8 @@ pub mod reloc;
 pub mod section;
 
 pub use error::{Error, Result};
-pub use export::{ExportAddress, ExportDirectory, ExportTable, ExportedFunction};
-pub use import::{ImportDescriptor, ImportTable, ImportThunk, ImportedDll};
+pub use export::{ExportAddress, ExportDirectory, ExportTable, ExportTableBuilder, ExportedFunction};
+pub use import::{ImportDescriptor, ImportTable, ImportTableBuilder, ImportThunk, ImportedDll};
 pub use layout::LayoutConfig;
 pub use pe::{PEHeaders, PE};
 pub use reader::{BaseAddressReader, FileReader, Reader, SliceReader, VecReader};

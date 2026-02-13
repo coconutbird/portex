@@ -214,6 +214,118 @@ impl PE {
         }
     }
 
+    /// Set the import table by building a new .idata section.
+    /// This will create or replace the existing import section.
+    pub fn set_imports(&mut self, imports: crate::import::ImportTable) {
+        use crate::data_dir::index::{IMPORT, IAT};
+        use crate::import::ImportTableBuilder;
+        use crate::section::characteristics::{READ, INITIALIZED_DATA};
+
+        if imports.is_empty() {
+            // Remove import section and clear data directories
+            self.remove_section(".idata");
+            let dirs = self.optional_header.data_directories_mut();
+            if let Some(dir) = dirs.get_mut(IMPORT) {
+                dir.virtual_address = 0;
+                dir.size = 0;
+            }
+            if let Some(dir) = dirs.get_mut(IAT) {
+                dir.virtual_address = 0;
+                dir.size = 0;
+            }
+            return;
+        }
+
+        // Remove old import section if exists
+        self.remove_section(".idata");
+
+        // We need to know where the section will be placed
+        // First, update layout to get current state
+        self.update_layout();
+
+        // Calculate where the new section will be placed
+        let config = LayoutConfig::from_optional_header(&self.optional_header);
+        let last_section_rva_end = self.sections.last()
+            .map(|s| s.header.virtual_address + s.header.virtual_size)
+            .unwrap_or(config.section_alignment);
+        let new_section_rva = config.align_section(last_section_rva_end);
+
+        // Build the import section
+        let builder = ImportTableBuilder::new(self.is_64bit(), new_section_rva);
+        let (section_data, iat_rva, iat_size) = builder.build(&imports);
+
+        // Create the section
+        let mut section = Section::new(".idata", READ | INITIALIZED_DATA);
+        section.set_data(section_data);
+
+        // Add the section
+        self.add_section(section);
+
+        // Update data directories (after add_section updates layout)
+        let import_rva = new_section_rva;
+        let import_size = (imports.dlls.len() + 1) as u32 * crate::import::ImportDescriptor::SIZE as u32;
+
+        let dirs = self.optional_header.data_directories_mut();
+        if let Some(dir) = dirs.get_mut(IMPORT) {
+            dir.virtual_address = import_rva;
+            dir.size = import_size;
+        }
+        if let Some(dir) = dirs.get_mut(IAT) {
+            dir.virtual_address = iat_rva;
+            dir.size = iat_size;
+        }
+    }
+
+    /// Set the export table by building a new .edata section.
+    /// This will create or replace the existing export section.
+    pub fn set_exports(&mut self, exports: crate::export::ExportTable) {
+        use crate::data_dir::index::EXPORT;
+        use crate::export::ExportTableBuilder;
+        use crate::section::characteristics::{READ, INITIALIZED_DATA};
+
+        if exports.is_empty() && exports.dll_name.is_empty() {
+            // Remove export section and clear data directory
+            self.remove_section(".edata");
+            let dirs = self.optional_header.data_directories_mut();
+            if let Some(dir) = dirs.get_mut(EXPORT) {
+                dir.virtual_address = 0;
+                dir.size = 0;
+            }
+            return;
+        }
+
+        // Remove old export section if exists
+        self.remove_section(".edata");
+
+        // Update layout to get current state
+        self.update_layout();
+
+        // Calculate where the new section will be placed
+        let config = LayoutConfig::from_optional_header(&self.optional_header);
+        let last_section_rva_end = self.sections.last()
+            .map(|s| s.header.virtual_address + s.header.virtual_size)
+            .unwrap_or(config.section_alignment);
+        let new_section_rva = config.align_section(last_section_rva_end);
+
+        // Build the export section
+        let builder = ExportTableBuilder::new(new_section_rva);
+        let (section_data, export_size) = builder.build(&exports);
+
+        // Create the section
+        let mut section = Section::new(".edata", READ | INITIALIZED_DATA);
+        section.set_data(section_data);
+
+        // Add the section
+        self.add_section(section);
+
+        // Update data directory
+        let dirs = self.optional_header.data_directories_mut();
+        if let Some(dir) = dirs.get_mut(EXPORT) {
+            dir.virtual_address = new_section_rva;
+            dir.size = export_size;
+        }
+    }
+
     /// Recalculate layout (section RVAs, file offsets, sizes).
     /// Call this after modifying sections before writing.
     pub fn update_layout(&mut self) {
