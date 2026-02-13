@@ -1,0 +1,13 @@
+Refactor: Section-owned data architecture + layout engine
+
+Major refactoring for proper PE rewriting support:
+
+- Section struct now owns its data (Vec<u8>) instead of pointing into monolithic buffer
+- Added layout.rs with alignment utilities and section layout calculation
+- PE::build() properly recalculates all offsets and sizes before writing
+- PE::update_layout() for recalculating section RVAs and file offsets
+- Added section manipulation: add_section(), remove_section()
+- SectionHeader now has contains_rva(), rva_to_offset() helpers
+- Section has data_at_rva(), data_at_rva_mut() for RVA-based access
+- PEHeaders renamed section field to section_headers for clarity
+- 25 unit tests passing

@@ -31,12 +31,15 @@ pub mod coff;
 pub mod data_dir;
 pub mod dos;
 pub mod error;
+pub mod layout;
 pub mod optional;
 pub mod pe;
 pub mod reader;
 pub mod section;
 
 pub use error::{Error, Result};
+pub use layout::LayoutConfig;
 pub use pe::{PEHeaders, PE};
 pub use reader::{BaseAddressReader, FileReader, Reader, SliceReader, VecReader};
+pub use section::{Section, SectionHeader};
 
