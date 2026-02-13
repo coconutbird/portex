@@ -27,6 +27,10 @@ pub enum Error {
     InvalidDataDirectory(String),
     /// Offset out of bounds.
     OffsetOutOfBounds { offset: usize, size: usize },
+    /// Invalid RVA (could not read at address).
+    InvalidRva(u32),
+    /// Invalid UTF-8 string.
+    InvalidUtf8,
 }
 
 impl fmt::Display for Error {
@@ -45,6 +49,8 @@ impl fmt::Display for Error {
             Error::OffsetOutOfBounds { offset, size } => {
                 write!(f, "Offset {offset:#x} out of bounds (size: {size})")
             }
+            Error::InvalidRva(rva) => write!(f, "Invalid RVA: {rva:#x}"),
+            Error::InvalidUtf8 => write!(f, "Invalid UTF-8 string"),
         }
     }
 }

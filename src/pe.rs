@@ -161,6 +161,59 @@ impl PE {
         self.optional_header.image_base()
     }
 
+    /// Get a data directory entry.
+    pub fn data_directory(&self, index: usize) -> Option<&crate::data_dir::DataDirectory> {
+        self.optional_header.data_directories().get(index)
+    }
+
+    /// Parse the import table.
+    pub fn imports(&self) -> Result<crate::import::ImportTable> {
+        use crate::data_dir::index::IMPORT;
+
+        let dir = self.data_directory(IMPORT).filter(|d| d.is_present());
+        match dir {
+            Some(d) => {
+                let read_fn = |rva: u32, len: usize| -> Option<Vec<u8>> {
+                    self.read_at_rva(rva, len).map(|s| s.to_vec())
+                };
+                crate::import::ImportTable::parse(d.virtual_address, self.is_64bit(), read_fn)
+            }
+            None => Ok(crate::import::ImportTable::default()),
+        }
+    }
+
+    /// Parse the export table.
+    pub fn exports(&self) -> Result<crate::export::ExportTable> {
+        use crate::data_dir::index::EXPORT;
+
+        let dir = self.data_directory(EXPORT).filter(|d| d.is_present());
+        match dir {
+            Some(d) => {
+                let read_fn = |rva: u32, len: usize| -> Option<Vec<u8>> {
+                    self.read_at_rva(rva, len).map(|s| s.to_vec())
+                };
+                crate::export::ExportTable::parse(d.virtual_address, d.size, read_fn)
+            }
+            None => Ok(crate::export::ExportTable::default()),
+        }
+    }
+
+    /// Parse the relocation table.
+    pub fn relocations(&self) -> Result<crate::reloc::RelocationTable> {
+        use crate::data_dir::index::BASERELOC;
+
+        let dir = self.data_directory(BASERELOC).filter(|d| d.is_present());
+        match dir {
+            Some(d) => {
+                let read_fn = |rva: u32, len: usize| -> Option<Vec<u8>> {
+                    self.read_at_rva(rva, len).map(|s| s.to_vec())
+                };
+                crate::reloc::RelocationTable::parse(d.virtual_address, d.size, read_fn)
+            }
+            None => Ok(crate::reloc::RelocationTable::default()),
+        }
+    }
+
     /// Recalculate layout (section RVAs, file offsets, sizes).
     /// Call this after modifying sections before writing.
     pub fn update_layout(&mut self) {

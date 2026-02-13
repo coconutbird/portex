@@ -31,15 +31,21 @@ pub mod coff;
 pub mod data_dir;
 pub mod dos;
 pub mod error;
+pub mod export;
+pub mod import;
 pub mod layout;
 pub mod optional;
 pub mod pe;
 pub mod reader;
+pub mod reloc;
 pub mod section;
 
 pub use error::{Error, Result};
+pub use export::{ExportAddress, ExportDirectory, ExportTable, ExportedFunction};
+pub use import::{ImportDescriptor, ImportTable, ImportThunk, ImportedDll};
 pub use layout::LayoutConfig;
 pub use pe::{PEHeaders, PE};
 pub use reader::{BaseAddressReader, FileReader, Reader, SliceReader, VecReader};
+pub use reloc::{RelocationBlock, RelocationEntry, RelocationTable, RelocationType};
 pub use section::{Section, SectionHeader};
 
