@@ -1,8 +1,0 @@
-Add import, export, and relocation table support
-
-- Add import.rs: ImportDescriptor, ImportThunk, ImportTable for parsing imports
-- Add export.rs: ExportDirectory, ExportTable for parsing exports
-- Add reloc.rs: RelocationBlock, RelocationEntry, RelocationTable with apply()
-- Add PE convenience methods: imports(), exports(), relocations()
-- Add error variants: InvalidRva, InvalidUtf8
-- 34 unit tests passing
