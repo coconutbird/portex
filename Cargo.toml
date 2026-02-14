@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 description = "A PE (Portable Executable) file reader/writer library"
 license = "MIT"
+repository = "https://github.com/coconutbird/portex"
+readme = "README.md"
+keywords = ["pe", "portable-executable", "windows", "exe", "dll"]
+categories = ["parsing", "development-tools"]
 
 [dependencies]
 
