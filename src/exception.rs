@@ -410,4 +410,3 @@ mod tests {
         assert_eq!(parsed.functions[1].begin_address, 0x1200);
     }
 }
-

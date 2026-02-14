@@ -312,8 +312,9 @@ impl ResourceDirectory {
 
         // Parse type entries (level 1)
         for i in 0..root_header.total_entries() {
-            let entry_offset = rsrc_rva + ResourceDirectoryHeader::SIZE as u32 +
-                (i * ResourceDirectoryEntry::SIZE) as u32;
+            let entry_offset = rsrc_rva
+                + ResourceDirectoryHeader::SIZE as u32
+                + (i * ResourceDirectoryEntry::SIZE) as u32;
             let entry_data = read_at_rva(entry_offset, ResourceDirectoryEntry::SIZE)
                 .ok_or(Error::InvalidRva(entry_offset))?;
             let type_entry = ResourceDirectoryEntry::parse(&entry_data)?;
@@ -331,8 +332,9 @@ impl ResourceDirectory {
             let name_header = ResourceDirectoryHeader::parse(&name_dir_data)?;
 
             for j in 0..name_header.total_entries() {
-                let name_entry_offset = name_dir_offset + ResourceDirectoryHeader::SIZE as u32 +
-                    (j * ResourceDirectoryEntry::SIZE) as u32;
+                let name_entry_offset = name_dir_offset
+                    + ResourceDirectoryHeader::SIZE as u32
+                    + (j * ResourceDirectoryEntry::SIZE) as u32;
                 let name_entry_data = read_at_rva(name_entry_offset, ResourceDirectoryEntry::SIZE)
                     .ok_or(Error::InvalidRva(name_entry_offset))?;
                 let name_entry = ResourceDirectoryEntry::parse(&name_entry_data)?;
@@ -350,10 +352,12 @@ impl ResourceDirectory {
                 let lang_header = ResourceDirectoryHeader::parse(&lang_dir_data)?;
 
                 for k in 0..lang_header.total_entries() {
-                    let lang_entry_offset = lang_dir_offset + ResourceDirectoryHeader::SIZE as u32 +
-                        (k * ResourceDirectoryEntry::SIZE) as u32;
-                    let lang_entry_data = read_at_rva(lang_entry_offset, ResourceDirectoryEntry::SIZE)
-                        .ok_or(Error::InvalidRva(lang_entry_offset))?;
+                    let lang_entry_offset = lang_dir_offset
+                        + ResourceDirectoryHeader::SIZE as u32
+                        + (k * ResourceDirectoryEntry::SIZE) as u32;
+                    let lang_entry_data =
+                        read_at_rva(lang_entry_offset, ResourceDirectoryEntry::SIZE)
+                            .ok_or(Error::InvalidRva(lang_entry_offset))?;
                     let lang_entry = ResourceDirectoryEntry::parse(&lang_entry_data)?;
 
                     let language = lang_entry.id();
@@ -383,7 +387,11 @@ impl ResourceDirectory {
         Ok(Self { resources })
     }
 
-    fn parse_resource_id<F>(entry: &ResourceDirectoryEntry, rsrc_rva: u32, read_at_rva: &F) -> Result<ResourceId>
+    fn parse_resource_id<F>(
+        entry: &ResourceDirectoryEntry,
+        rsrc_rva: u32,
+        read_at_rva: &F,
+    ) -> Result<ResourceId>
     where
         F: Fn(u32, usize) -> Option<Vec<u8>>,
     {
@@ -392,7 +400,8 @@ impl ResourceDirectory {
             // Resource names are length-prefixed Unicode strings
             let len_data = read_at_rva(name_offset, 2).ok_or(Error::InvalidRva(name_offset))?;
             let len = u16::from_le_bytes([len_data[0], len_data[1]]) as usize;
-            let name_data = read_at_rva(name_offset + 2, len * 2).ok_or(Error::InvalidRva(name_offset + 2))?;
+            let name_data =
+                read_at_rva(name_offset + 2, len * 2).ok_or(Error::InvalidRva(name_offset + 2))?;
 
             // Convert UTF-16LE to String
             let mut chars = Vec::with_capacity(len);
@@ -443,6 +452,443 @@ impl ResourceDirectory {
     }
 }
 
+/// A resource entry with owned data for building.
+#[derive(Debug, Clone)]
+pub struct ResourceEntry {
+    /// Resource type (level 1).
+    pub resource_type: ResourceId,
+    /// Resource name/ID (level 2).
+    pub name: ResourceId,
+    /// Language ID (level 3).
+    pub language: u16,
+    /// Code page.
+    pub code_page: u32,
+    /// Resource data.
+    pub data: Vec<u8>,
+}
+
+impl ResourceEntry {
+    /// Create a new resource entry with numeric type and ID.
+    pub fn new(resource_type: u16, id: u16, language: u16, data: Vec<u8>) -> Self {
+        Self {
+            resource_type: ResourceId::Id(resource_type),
+            name: ResourceId::Id(id),
+            language,
+            code_page: 0,
+            data,
+        }
+    }
+
+    /// Create a new resource entry with a standard type.
+    pub fn with_type(rt: ResourceType, id: u16, language: u16, data: Vec<u8>) -> Self {
+        Self::new(rt as u16, id, language, data)
+    }
+
+    /// Create a manifest resource.
+    pub fn manifest(data: Vec<u8>) -> Self {
+        Self::with_type(ResourceType::Manifest, 1, 0x0409, data)
+    }
+
+    /// Create a version info resource.
+    pub fn version_info(data: Vec<u8>) -> Self {
+        Self::with_type(ResourceType::Version, 1, 0x0409, data)
+    }
+}
+
+/// Builder for constructing a resource directory.
+///
+/// The PE resource directory is a 3-level tree:
+/// - Level 1: Resource Type (e.g., RT_ICON, RT_MANIFEST)
+/// - Level 2: Resource Name/ID
+/// - Level 3: Language ID
+///
+/// # Example
+/// ```ignore
+/// let mut builder = ResourceBuilder::new();
+/// builder.add(ResourceEntry::manifest(manifest_xml.into_bytes()));
+/// let (data, size) = builder.build(rsrc_rva);
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct ResourceBuilder {
+    /// Resources to include.
+    entries: Vec<ResourceEntry>,
+}
+
+impl ResourceBuilder {
+    /// Create a new resource builder.
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    /// Add a resource entry.
+    pub fn add(&mut self, entry: ResourceEntry) -> &mut Self {
+        self.entries.push(entry);
+        self
+    }
+
+    /// Add a resource with standard type.
+    pub fn add_resource(
+        &mut self,
+        rt: ResourceType,
+        id: u16,
+        language: u16,
+        data: Vec<u8>,
+    ) -> &mut Self {
+        self.add(ResourceEntry::with_type(rt, id, language, data))
+    }
+
+    /// Add a manifest resource.
+    pub fn add_manifest(&mut self, data: Vec<u8>) -> &mut Self {
+        self.add(ResourceEntry::manifest(data))
+    }
+
+    /// Add a version info resource.
+    pub fn add_version_info(&mut self, data: Vec<u8>) -> &mut Self {
+        self.add(ResourceEntry::version_info(data))
+    }
+
+    /// Calculate the total size needed for the resource section.
+    pub fn calculate_size(&self) -> usize {
+        if self.entries.is_empty() {
+            return 0;
+        }
+
+        let layout = self.compute_layout();
+        layout.total_size
+    }
+
+    /// Build the resource directory data.
+    /// Returns (data, total_size).
+    pub fn build(&self, base_rva: u32) -> (Vec<u8>, u32) {
+        if self.entries.is_empty() {
+            return (Vec::new(), 0);
+        }
+
+        let layout = self.compute_layout();
+        let mut data = vec![0u8; layout.total_size];
+
+        // Write root directory (Level 1 - Types)
+        self.write_directory_header(&mut data, 0, &layout.types);
+
+        let mut entry_offset = ResourceDirectoryHeader::SIZE;
+        for (type_idx, (type_id, names)) in layout.types.iter().enumerate() {
+            // Write type entry
+            let name_or_id = match type_id {
+                ResourceId::Id(id) => *id as u32,
+                ResourceId::Name(_) => 0x80000000 | layout.type_name_offsets[type_idx],
+            };
+            let offset_to_data = 0x80000000 | layout.type_dir_offsets[type_idx];
+            self.write_entry(&mut data, entry_offset, name_or_id, offset_to_data);
+            entry_offset += ResourceDirectoryEntry::SIZE;
+
+            // Write name directory (Level 2)
+            let name_dir_offset = layout.type_dir_offsets[type_idx] as usize;
+            self.write_directory_header(&mut data, name_dir_offset, names);
+
+            let mut name_entry_offset = name_dir_offset + ResourceDirectoryHeader::SIZE;
+            let mut lang_idx_base = 0;
+            for (name_idx, (name_id, langs)) in names.iter().enumerate() {
+                // Write name entry
+                let name_or_id = match name_id {
+                    ResourceId::Id(id) => *id as u32,
+                    ResourceId::Name(_) => {
+                        0x80000000 | layout.name_name_offsets[type_idx][name_idx]
+                    }
+                };
+                let offset_to_data = 0x80000000 | layout.name_dir_offsets[type_idx][name_idx];
+                self.write_entry(&mut data, name_entry_offset, name_or_id, offset_to_data);
+                name_entry_offset += ResourceDirectoryEntry::SIZE;
+
+                // Write language directory (Level 3)
+                let lang_dir_offset = layout.name_dir_offsets[type_idx][name_idx] as usize;
+                self.write_lang_directory_header(&mut data, lang_dir_offset, langs.len());
+
+                let mut lang_entry_offset = lang_dir_offset + ResourceDirectoryHeader::SIZE;
+                for (lang_local_idx, &lang_id) in langs.iter().enumerate() {
+                    let lang_idx = lang_idx_base + lang_local_idx;
+                    // Write language entry (points to data entry, not directory)
+                    let data_entry_offset = layout.data_entry_offsets[type_idx][lang_idx];
+                    self.write_entry(
+                        &mut data,
+                        lang_entry_offset,
+                        lang_id as u32,
+                        data_entry_offset,
+                    );
+                    lang_entry_offset += ResourceDirectoryEntry::SIZE;
+
+                    // Write data entry
+                    let entry_info = &layout.entry_info[type_idx][lang_idx];
+                    let data_rva = base_rva + layout.data_offsets[type_idx][lang_idx];
+                    self.write_data_entry(
+                        &mut data,
+                        data_entry_offset as usize,
+                        data_rva,
+                        entry_info.data_size,
+                        entry_info.code_page,
+                    );
+
+                    // Write actual resource data
+                    let data_offset = layout.data_offsets[type_idx][lang_idx] as usize;
+                    data[data_offset..data_offset + entry_info.data_size as usize]
+                        .copy_from_slice(&self.entries[entry_info.entry_idx].data);
+                }
+                lang_idx_base += langs.len();
+            }
+        }
+
+        // Write string names
+        for (type_idx, (type_id, _)) in layout.types.iter().enumerate() {
+            if let ResourceId::Name(name) = type_id {
+                let offset = layout.type_name_offsets[type_idx] as usize;
+                self.write_string_name(&mut data, offset, name);
+            }
+        }
+
+        for (type_idx, (_, names)) in layout.types.iter().enumerate() {
+            for (name_idx, (name_id, _)) in names.iter().enumerate() {
+                if let ResourceId::Name(name) = name_id {
+                    let offset = layout.name_name_offsets[type_idx][name_idx] as usize;
+                    self.write_string_name(&mut data, offset, name);
+                }
+            }
+        }
+
+        (data, layout.total_size as u32)
+    }
+
+    fn write_directory_header<T>(
+        &self,
+        data: &mut [u8],
+        offset: usize,
+        entries: &[(ResourceId, T)],
+    ) {
+        let (named, id): (Vec<_>, Vec<_>) = entries
+            .iter()
+            .partition(|(id, _)| matches!(id, ResourceId::Name(_)));
+        let header = ResourceDirectoryHeader {
+            characteristics: 0,
+            time_date_stamp: 0,
+            major_version: 0,
+            minor_version: 0,
+            number_of_named_entries: named.len() as u16,
+            number_of_id_entries: id.len() as u16,
+        };
+        data[offset..offset + ResourceDirectoryHeader::SIZE].copy_from_slice(&header.to_bytes());
+    }
+
+    fn write_lang_directory_header(&self, data: &mut [u8], offset: usize, count: usize) {
+        let header = ResourceDirectoryHeader {
+            characteristics: 0,
+            time_date_stamp: 0,
+            major_version: 0,
+            minor_version: 0,
+            number_of_named_entries: 0,
+            number_of_id_entries: count as u16,
+        };
+        data[offset..offset + ResourceDirectoryHeader::SIZE].copy_from_slice(&header.to_bytes());
+    }
+
+    fn write_entry(&self, data: &mut [u8], offset: usize, name_or_id: u32, offset_to_data: u32) {
+        let entry = ResourceDirectoryEntry {
+            name_or_id,
+            offset_to_data,
+        };
+        data[offset..offset + ResourceDirectoryEntry::SIZE].copy_from_slice(&entry.to_bytes());
+    }
+
+    fn write_data_entry(
+        &self,
+        data: &mut [u8],
+        offset: usize,
+        rva: u32,
+        size: u32,
+        code_page: u32,
+    ) {
+        let entry = ResourceDataEntry {
+            offset_to_data: rva,
+            size,
+            code_page,
+            reserved: 0,
+        };
+        data[offset..offset + ResourceDataEntry::SIZE].copy_from_slice(&entry.to_bytes());
+    }
+
+    fn write_string_name(&self, data: &mut [u8], offset: usize, name: &str) {
+        let utf16: Vec<u16> = name.encode_utf16().collect();
+        let len = utf16.len() as u16;
+        data[offset..offset + 2].copy_from_slice(&len.to_le_bytes());
+        for (i, ch) in utf16.iter().enumerate() {
+            data[offset + 2 + i * 2..offset + 2 + i * 2 + 2].copy_from_slice(&ch.to_le_bytes());
+        }
+    }
+
+    fn compute_layout(&self) -> ResourceLayout {
+        // Group entries by type -> name -> language
+        use std::collections::BTreeMap;
+
+        // Type -> Name -> Vec<(language, entry_idx)>
+        let mut grouped: BTreeMap<ResourceIdKey, BTreeMap<ResourceIdKey, Vec<(u16, usize)>>> =
+            BTreeMap::new();
+
+        for (idx, entry) in self.entries.iter().enumerate() {
+            let type_key = ResourceIdKey::from(&entry.resource_type);
+            let name_key = ResourceIdKey::from(&entry.name);
+
+            grouped
+                .entry(type_key)
+                .or_default()
+                .entry(name_key)
+                .or_default()
+                .push((entry.language, idx));
+        }
+
+        // Build layout
+        let num_types = grouped.len();
+        let mut offset = ResourceDirectoryHeader::SIZE + num_types * ResourceDirectoryEntry::SIZE;
+
+        // Type directories
+        let mut type_dir_offsets = Vec::new();
+        let mut type_name_offsets = Vec::new();
+        let mut name_dir_offsets: Vec<Vec<u32>> = Vec::new();
+        let mut name_name_offsets: Vec<Vec<u32>> = Vec::new();
+        let mut data_entry_offsets: Vec<Vec<u32>> = Vec::new();
+        let mut entry_info: Vec<Vec<EntryInfo>> = Vec::new();
+
+        let mut types: Vec<(ResourceId, Vec<(ResourceId, Vec<u16>)>)> = Vec::new();
+
+        for (type_key, names_map) in &grouped {
+            type_dir_offsets.push(offset as u32);
+            type_name_offsets.push(0); // Placeholder
+
+            let num_names = names_map.len();
+            offset += ResourceDirectoryHeader::SIZE + num_names * ResourceDirectoryEntry::SIZE;
+
+            let mut names_vec = Vec::new();
+            let mut this_name_dir_offsets = Vec::new();
+            let mut this_name_name_offsets = Vec::new();
+            let mut this_data_entry_offsets = Vec::new();
+            let mut this_entry_info = Vec::new();
+
+            for (name_key, langs) in names_map {
+                this_name_dir_offsets.push(offset as u32);
+                this_name_name_offsets.push(0); // Placeholder
+
+                let num_langs = langs.len();
+                offset += ResourceDirectoryHeader::SIZE + num_langs * ResourceDirectoryEntry::SIZE;
+
+                let mut lang_ids = Vec::new();
+                for &(lang_id, entry_idx) in langs {
+                    this_data_entry_offsets.push(offset as u32);
+                    offset += ResourceDataEntry::SIZE;
+                    lang_ids.push(lang_id);
+                    this_entry_info.push(EntryInfo {
+                        entry_idx,
+                        data_size: self.entries[entry_idx].data.len() as u32,
+                        code_page: self.entries[entry_idx].code_page,
+                    });
+                }
+
+                names_vec.push((name_key.to_resource_id(), lang_ids));
+            }
+
+            name_dir_offsets.push(this_name_dir_offsets);
+            name_name_offsets.push(this_name_name_offsets);
+            data_entry_offsets.push(this_data_entry_offsets);
+            entry_info.push(this_entry_info);
+            types.push((type_key.to_resource_id(), names_vec));
+        }
+
+        // String table for names
+        let mut string_offset = offset;
+        for (type_idx, (type_id, _)) in types.iter().enumerate() {
+            if let ResourceId::Name(name) = type_id {
+                type_name_offsets[type_idx] = string_offset as u32;
+                string_offset += 2 + name.encode_utf16().count() * 2;
+            }
+        }
+
+        for (type_idx, (_, names)) in types.iter().enumerate() {
+            for (name_idx, (name_id, _)) in names.iter().enumerate() {
+                if let ResourceId::Name(name) = name_id {
+                    name_name_offsets[type_idx][name_idx] = string_offset as u32;
+                    string_offset += 2 + name.encode_utf16().count() * 2;
+                }
+            }
+        }
+
+        // Calculate data offsets (8-byte aligned)
+        let mut data_offset = (string_offset + 7) & !7;
+        let mut data_offsets: Vec<Vec<u32>> = Vec::new();
+
+        for type_entries in &entry_info {
+            let mut type_data_offsets = Vec::new();
+            for info in type_entries {
+                type_data_offsets.push(data_offset as u32);
+                data_offset += (info.data_size as usize + 7) & !7;
+            }
+            data_offsets.push(type_data_offsets);
+        }
+
+        let total_size = data_offset;
+
+        ResourceLayout {
+            types,
+            type_dir_offsets,
+            type_name_offsets,
+            name_dir_offsets,
+            name_name_offsets,
+            data_entry_offsets,
+            data_offsets,
+            entry_info,
+            total_size,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum ResourceIdKey {
+    Id(u16),
+    Name(String),
+}
+
+impl ResourceIdKey {
+    fn from(id: &ResourceId) -> Self {
+        match id {
+            ResourceId::Id(n) => Self::Id(*n),
+            ResourceId::Name(s) => Self::Name(s.clone()),
+        }
+    }
+
+    fn to_resource_id(&self) -> ResourceId {
+        match self {
+            Self::Id(n) => ResourceId::Id(*n),
+            Self::Name(s) => ResourceId::Name(s.clone()),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct EntryInfo {
+    entry_idx: usize,
+    data_size: u32,
+    code_page: u32,
+}
+
+#[derive(Debug)]
+struct ResourceLayout {
+    types: Vec<(ResourceId, Vec<(ResourceId, Vec<u16>)>)>,
+    type_dir_offsets: Vec<u32>,
+    type_name_offsets: Vec<u32>,
+    name_dir_offsets: Vec<Vec<u32>>,
+    name_name_offsets: Vec<Vec<u32>>,
+    data_entry_offsets: Vec<Vec<u32>>,
+    data_offsets: Vec<Vec<u32>>,
+    entry_info: Vec<Vec<EntryInfo>>,
+    total_size: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -483,7 +929,7 @@ mod tests {
     fn test_resource_entry_flags() {
         // Test directory entry with name
         let entry = ResourceDirectoryEntry {
-            name_or_id: 0x80001000, // High bit set = named
+            name_or_id: 0x80001000,     // High bit set = named
             offset_to_data: 0x80002000, // High bit set = directory
         };
         assert!(entry.is_named());
@@ -507,5 +953,54 @@ mod tests {
         assert_eq!(ResourceType::Version.name(), "VERSION");
         assert_eq!(ResourceType::Icon.name(), "ICON");
     }
-}
 
+    #[test]
+    fn test_resource_builder_single_resource() {
+        let mut builder = ResourceBuilder::new();
+        builder.add_manifest(b"<xml>test</xml>".to_vec());
+
+        let (data, size) = builder.build(0x3000);
+        assert!(size > 0);
+        assert!(!data.is_empty());
+
+        // Verify we can parse the built data
+        let read_fn = |rva: u32, len: usize| -> Option<Vec<u8>> {
+            let offset = (rva - 0x3000) as usize;
+            if offset + len <= data.len() {
+                Some(data[offset..offset + len].to_vec())
+            } else {
+                None
+            }
+        };
+
+        let parsed = ResourceDirectory::parse(0x3000, size, read_fn).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert!(parsed.manifest().is_some());
+    }
+
+    #[test]
+    fn test_resource_builder_multiple_resources() {
+        let mut builder = ResourceBuilder::new();
+        builder
+            .add_manifest(b"manifest data".to_vec())
+            .add_version_info(b"version data".to_vec())
+            .add_resource(ResourceType::RcData, 100, 0x0409, b"custom data".to_vec());
+
+        let (data, size) = builder.build(0x4000);
+        assert!(size > 0);
+
+        let read_fn = |rva: u32, len: usize| -> Option<Vec<u8>> {
+            let offset = (rva - 0x4000) as usize;
+            if offset + len <= data.len() {
+                Some(data[offset..offset + len].to_vec())
+            } else {
+                None
+            }
+        };
+
+        let parsed = ResourceDirectory::parse(0x4000, size, read_fn).unwrap();
+        assert_eq!(parsed.len(), 3);
+        assert!(parsed.manifest().is_some());
+        assert!(parsed.version_info().is_some());
+    }
+}

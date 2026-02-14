@@ -535,6 +535,263 @@ impl PE {
         file.write_all(&bytes)?;
         Ok(())
     }
+
+    // ========== New PE Integration Methods ==========
+
+    /// Parse the TLS directory.
+    pub fn tls(&self) -> Result<Option<crate::tls::TlsInfo>> {
+        use crate::data_dir::index::TLS;
+
+        let dir = self.data_directory(TLS).filter(|d| d.is_present());
+        match dir {
+            Some(d) => {
+                let read_fn = |rva: u32, len: usize| -> Option<Vec<u8>> {
+                    self.read_at_rva(rva, len).map(|s| s.to_vec())
+                };
+                Ok(Some(crate::tls::TlsInfo::parse(
+                    d.virtual_address,
+                    d.size,
+                    self.image_base(),
+                    self.is_64bit(),
+                    read_fn,
+                )?))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Parse the debug directory.
+    pub fn debug_info(&self) -> Result<Option<crate::debug::DebugInfo>> {
+        use crate::data_dir::index::DEBUG;
+
+        let dir = self.data_directory(DEBUG).filter(|d| d.is_present());
+        match dir {
+            Some(d) => {
+                let read_fn = |rva: u32, len: usize| -> Option<Vec<u8>> {
+                    self.read_at_rva(rva, len).map(|s| s.to_vec())
+                };
+                Ok(Some(crate::debug::DebugInfo::parse(
+                    d.virtual_address,
+                    d.size,
+                    read_fn,
+                )?))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Parse the rich header (if present).
+    pub fn rich_header(&self) -> Option<crate::rich::RichHeader> {
+        crate::rich::RichHeader::parse(&self.dos_stub)
+    }
+
+    /// Parse the exception directory (.pdata).
+    pub fn exception_directory(&self) -> Result<crate::exception::ExceptionDirectory> {
+        use crate::data_dir::index::EXCEPTION;
+
+        let dir = self.data_directory(EXCEPTION).filter(|d| d.is_present());
+        match dir {
+            Some(d) => {
+                let read_fn = |rva: u32, len: usize| -> Option<Vec<u8>> {
+                    self.read_at_rva(rva, len).map(|s| s.to_vec())
+                };
+                crate::exception::ExceptionDirectory::parse(d.virtual_address, d.size, read_fn)
+            }
+            None => Ok(crate::exception::ExceptionDirectory::default()),
+        }
+    }
+
+    /// Parse the load config directory.
+    pub fn load_config(&self) -> Result<Option<crate::loadconfig::LoadConfigDirectory>> {
+        use crate::data_dir::index::LOAD_CONFIG;
+
+        let dir = self.data_directory(LOAD_CONFIG).filter(|d| d.is_present());
+        match dir {
+            Some(d) => {
+                let data = self
+                    .read_at_rva(d.virtual_address, d.size as usize)
+                    .ok_or(crate::Error::InvalidRva(d.virtual_address))?;
+                Ok(Some(crate::loadconfig::LoadConfigDirectory::parse(
+                    data,
+                    self.is_64bit(),
+                )?))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Parse the resource directory.
+    pub fn resources(&self) -> Result<crate::resource::ResourceDirectory> {
+        use crate::data_dir::index::RESOURCE;
+
+        let dir = self.data_directory(RESOURCE).filter(|d| d.is_present());
+        match dir {
+            Some(d) => {
+                let read_fn = |rva: u32, len: usize| -> Option<Vec<u8>> {
+                    self.read_at_rva(rva, len).map(|s| s.to_vec())
+                };
+                crate::resource::ResourceDirectory::parse(d.virtual_address, d.size, read_fn)
+            }
+            None => Ok(crate::resource::ResourceDirectory::default()),
+        }
+    }
+
+    /// Update relocations: tries in-place replacement first, otherwise appends to target section.
+    pub fn update_relocations(
+        &mut self,
+        mut relocs: crate::reloc::RelocationTable,
+        target_section: Option<&str>,
+    ) -> Result<u32> {
+        use crate::data_dir::index::BASERELOC;
+
+        if relocs.blocks.is_empty() {
+            self.clear_data_directory(BASERELOC);
+            return Ok(0);
+        }
+
+        let data = relocs.build();
+        let required_size = data.len();
+
+        // Check if we can replace in-place
+        let existing_dir = self.data_directory(BASERELOC).cloned();
+        if let Some(ref dir) = existing_dir {
+            if dir.is_present() && dir.size as usize >= required_size {
+                if self.write_at_rva(dir.virtual_address, &data).is_some() {
+                    self.set_data_directory(BASERELOC, dir.virtual_address, data.len() as u32);
+                    return Ok(dir.virtual_address);
+                }
+            }
+        }
+
+        // Find target section
+        let section_name: String = target_section
+            .map(|s| s.to_string())
+            .or_else(|| {
+                if let Some(ref dir) = existing_dir {
+                    if dir.is_present() {
+                        if let Some(section) = self.section_by_rva(dir.virtual_address) {
+                            return Some(section.name().to_string());
+                        }
+                    }
+                }
+                None
+            })
+            .or_else(|| {
+                if self.section_by_name(".reloc").is_some() {
+                    Some(".reloc".to_string())
+                } else if self.section_by_name(".rdata").is_some() {
+                    Some(".rdata".to_string())
+                } else {
+                    self.sections.last().map(|s| s.name().to_string())
+                }
+            })
+            .unwrap_or_else(|| ".reloc".to_string());
+
+        let section_idx = self.sections.iter().position(|s| s.name() == section_name);
+        let section_idx = match section_idx {
+            Some(idx) => idx,
+            None => return Err(crate::Error::InvalidSection(section_name)),
+        };
+
+        let append_rva = {
+            let section = &self.sections[section_idx];
+            section.header.virtual_address + section.header.virtual_size
+        };
+
+        self.sections[section_idx].append_data(&data);
+        self.set_data_directory(BASERELOC, append_rva, data.len() as u32);
+
+        Ok(append_rva)
+    }
+
+    /// Update resources: tries in-place replacement first, otherwise appends to target section.
+    pub fn update_resources(
+        &mut self,
+        builder: &crate::resource::ResourceBuilder,
+        target_section: Option<&str>,
+    ) -> Result<u32> {
+        use crate::data_dir::index::RESOURCE;
+
+        let required_size = builder.calculate_size();
+        if required_size == 0 {
+            self.clear_data_directory(RESOURCE);
+            return Ok(0);
+        }
+
+        // Check if we can replace in-place
+        let existing_dir = self.data_directory(RESOURCE).cloned();
+        if let Some(ref dir) = existing_dir {
+            if dir.is_present() && dir.size as usize >= required_size {
+                let (data, size) = builder.build(dir.virtual_address);
+                if self.write_at_rva(dir.virtual_address, &data).is_some() {
+                    self.set_data_directory(RESOURCE, dir.virtual_address, size);
+                    return Ok(dir.virtual_address);
+                }
+            }
+        }
+
+        // Find target section
+        let section_name: String = target_section
+            .map(|s| s.to_string())
+            .or_else(|| {
+                if let Some(ref dir) = existing_dir {
+                    if dir.is_present() {
+                        if let Some(section) = self.section_by_rva(dir.virtual_address) {
+                            return Some(section.name().to_string());
+                        }
+                    }
+                }
+                None
+            })
+            .or_else(|| {
+                if self.section_by_name(".rsrc").is_some() {
+                    Some(".rsrc".to_string())
+                } else if self.section_by_name(".rdata").is_some() {
+                    Some(".rdata".to_string())
+                } else {
+                    self.sections.last().map(|s| s.name().to_string())
+                }
+            })
+            .unwrap_or_else(|| ".rsrc".to_string());
+
+        let section_idx = self.sections.iter().position(|s| s.name() == section_name);
+        let section_idx = match section_idx {
+            Some(idx) => idx,
+            None => return Err(crate::Error::InvalidSection(section_name)),
+        };
+
+        let append_rva = {
+            let section = &self.sections[section_idx];
+            section.header.virtual_address + section.header.virtual_size
+        };
+
+        let (data, size) = builder.build(append_rva);
+        self.sections[section_idx].append_data(&data);
+        self.set_data_directory(RESOURCE, append_rva, size);
+
+        Ok(append_rva)
+    }
+
+    /// Calculate and return the PE checksum.
+    pub fn calculate_checksum(&self) -> u32 {
+        let data = self.clone().build();
+        crate::checksum::compute_pe_checksum(&data).unwrap_or(0)
+    }
+
+    /// Update the checksum field in the optional header.
+    pub fn update_checksum(&mut self) {
+        let checksum = self.calculate_checksum();
+        match &mut self.optional_header {
+            OptionalHeader::Pe32(h) => h.check_sum = checksum,
+            OptionalHeader::Pe32Plus(h) => h.check_sum = checksum,
+        }
+    }
+
+    /// Read resource data at the given RVA.
+    pub fn read_resource_data(&self, resource: &crate::resource::Resource) -> Option<Vec<u8>> {
+        self.read_at_rva(resource.data_rva, resource.size as usize)
+            .map(|s| s.to_vec())
+    }
 }
 
 impl PEHeaders {

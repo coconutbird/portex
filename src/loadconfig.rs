@@ -83,9 +83,15 @@ impl LoadConfigDirectory32 {
             minor_version: u16::from_le_bytes([data[10], data[11]]),
             global_flags_clear: u32::from_le_bytes([data[12], data[13], data[14], data[15]]),
             global_flags_set: u32::from_le_bytes([data[16], data[17], data[18], data[19]]),
-            critical_section_default_timeout: u32::from_le_bytes([data[20], data[21], data[22], data[23]]),
-            de_commit_free_block_threshold: u32::from_le_bytes([data[24], data[25], data[26], data[27]]),
-            de_commit_total_free_threshold: u32::from_le_bytes([data[28], data[29], data[30], data[31]]),
+            critical_section_default_timeout: u32::from_le_bytes([
+                data[20], data[21], data[22], data[23],
+            ]),
+            de_commit_free_block_threshold: u32::from_le_bytes([
+                data[24], data[25], data[26], data[27],
+            ]),
+            de_commit_total_free_threshold: u32::from_le_bytes([
+                data[28], data[29], data[30], data[31],
+            ]),
             lock_prefix_table: u32::from_le_bytes([data[32], data[33], data[34], data[35]]),
             maximum_allocation_size: u32::from_le_bytes([data[36], data[37], data[38], data[39]]),
             virtual_memory_threshold: u32::from_le_bytes([data[40], data[41], data[42], data[43]]),
@@ -106,10 +112,14 @@ impl LoadConfigDirectory32 {
 
         // Parse CFG fields if present (offset 72-103)
         if data.len() >= Self::SIZE_WITH_CFG {
-            config.guard_cf_check_function_pointer = u32::from_le_bytes([data[72], data[73], data[74], data[75]]);
-            config.guard_cf_dispatch_function_pointer = u32::from_le_bytes([data[76], data[77], data[78], data[79]]);
-            config.guard_cf_function_table = u32::from_le_bytes([data[80], data[81], data[82], data[83]]);
-            config.guard_cf_function_count = u32::from_le_bytes([data[84], data[85], data[86], data[87]]);
+            config.guard_cf_check_function_pointer =
+                u32::from_le_bytes([data[72], data[73], data[74], data[75]]);
+            config.guard_cf_dispatch_function_pointer =
+                u32::from_le_bytes([data[76], data[77], data[78], data[79]]);
+            config.guard_cf_function_table =
+                u32::from_le_bytes([data[80], data[81], data[82], data[83]]);
+            config.guard_cf_function_count =
+                u32::from_le_bytes([data[84], data[85], data[86], data[87]]);
             config.guard_flags = u32::from_le_bytes([data[88], data[89], data[90], data[91]]);
         }
 
@@ -216,7 +226,9 @@ impl LoadConfigDirectory64 {
             minor_version: u16::from_le_bytes([data[10], data[11]]),
             global_flags_clear: u32::from_le_bytes([data[12], data[13], data[14], data[15]]),
             global_flags_set: u32::from_le_bytes([data[16], data[17], data[18], data[19]]),
-            critical_section_default_timeout: u32::from_le_bytes([data[20], data[21], data[22], data[23]]),
+            critical_section_default_timeout: u32::from_le_bytes([
+                data[20], data[21], data[22], data[23],
+            ]),
             de_commit_free_block_threshold: u64::from_le_bytes([
                 data[24], data[25], data[26], data[27], data[28], data[29], data[30], data[31],
             ]),
@@ -248,7 +260,8 @@ impl LoadConfigDirectory64 {
                 data[96], data[97], data[98], data[99], data[100], data[101], data[102], data[103],
             ]),
             se_handler_count: u64::from_le_bytes([
-                data[104], data[105], data[106], data[107], data[108], data[109], data[110], data[111],
+                data[104], data[105], data[106], data[107], data[108], data[109], data[110],
+                data[111],
             ]),
             ..Default::default()
         };
@@ -256,16 +269,20 @@ impl LoadConfigDirectory64 {
         // Parse CFG fields if present
         if data.len() >= Self::SIZE_WITH_CFG {
             config.guard_cf_check_function_pointer = u64::from_le_bytes([
-                data[112], data[113], data[114], data[115], data[116], data[117], data[118], data[119],
+                data[112], data[113], data[114], data[115], data[116], data[117], data[118],
+                data[119],
             ]);
             config.guard_cf_dispatch_function_pointer = u64::from_le_bytes([
-                data[120], data[121], data[122], data[123], data[124], data[125], data[126], data[127],
+                data[120], data[121], data[122], data[123], data[124], data[125], data[126],
+                data[127],
             ]);
             config.guard_cf_function_table = u64::from_le_bytes([
-                data[128], data[129], data[130], data[131], data[132], data[133], data[134], data[135],
+                data[128], data[129], data[130], data[131], data[132], data[133], data[134],
+                data[135],
             ]);
             config.guard_cf_function_count = u64::from_le_bytes([
-                data[136], data[137], data[138], data[139], data[140], data[141], data[142], data[143],
+                data[136], data[137], data[138], data[139], data[140], data[141], data[142],
+                data[143],
             ]);
             config.guard_flags = u32::from_le_bytes([data[144], data[145], data[146], data[147]]);
         }
@@ -424,4 +441,3 @@ mod tests {
         assert_eq!(original.guard_flags, parsed.guard_flags);
     }
 }
-
