@@ -77,7 +77,7 @@ pub use bound_import::{
 };
 pub use builder::PEBuilder;
 pub use checksum::{calculate_checksum, checksum_field_offset, compute_pe_checksum};
-pub use clr::CliHeader;
+pub use clr::{CliBuilder, CliHeader};
 pub use coff::{CoffHeader, MachineType};
 pub use data_dir::{DataDirectory, DataDirectoryType};
 pub use debug::{CodeViewRsds, DebugBuilder, DebugDirectory, DebugInfo, DebugType};
@@ -99,11 +99,13 @@ pub use loadconfig::{
 pub use optional::{OptionalHeader, OptionalHeader32, OptionalHeader64, Subsystem};
 pub use pe::{PE, PEHeaders};
 pub use reader::{BaseAddressReader, FileReader, Reader, SliceReader, VecReader};
-pub use reloc::{RelocationBlock, RelocationEntry, RelocationTable, RelocationType};
+pub use reloc::{
+    RelocationBlock, RelocationBuilder, RelocationEntry, RelocationTable, RelocationType,
+};
 pub use resource::{
     Resource, ResourceBuilder, ResourceDirectory, ResourceEntry, ResourceId, ResourceType,
 };
-pub use rich::{RichEntry, RichHeader};
+pub use rich::{RichBuilder, RichEntry, RichHeader};
 pub use section::{Section, SectionHeader};
 pub use security::{
     Certificate, CertificateRevision, CertificateType, SecurityBuilder, SecurityDirectory,

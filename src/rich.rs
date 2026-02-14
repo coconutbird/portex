@@ -238,6 +238,106 @@ impl RichHeader {
     }
 }
 
+/// Builder for Rich headers.
+///
+/// Rich headers contain build tool information inserted by Microsoft linkers.
+/// This builder helps create Rich headers with proper XOR encoding.
+///
+/// # Example
+///
+/// ```
+/// use portex::rich::{RichBuilder, RichEntry};
+///
+/// let mut builder = RichBuilder::new();
+///
+/// // Add build tool entries
+/// builder.add_entry(RichEntry {
+///     product_id: 0x0104,   // C++ compiler
+///     build_number: 30729,  // VS version
+///     use_count: 5,
+/// });
+///
+/// // Build with a specific key
+/// let (data, size) = builder.build_with_key(0x12345678);
+/// assert!(size > 0);
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct RichBuilder {
+    entries: Vec<RichEntry>,
+}
+
+impl RichBuilder {
+    /// Create a new Rich builder.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create from an existing Rich header.
+    pub fn from_header(header: &RichHeader) -> Self {
+        Self {
+            entries: header.entries.clone(),
+        }
+    }
+
+    /// Add a build tool entry.
+    pub fn add_entry(&mut self, entry: RichEntry) -> &mut Self {
+        self.entries.push(entry);
+        self
+    }
+
+    /// Add a build tool entry by components.
+    pub fn add(&mut self, product_id: u16, build_number: u16, use_count: u32) -> &mut Self {
+        self.entries.push(RichEntry {
+            product_id,
+            build_number,
+            use_count,
+        });
+        self
+    }
+
+    /// Get the number of entries.
+    pub fn entry_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Calculate the size of the built Rich header.
+    pub fn calculate_size(&self) -> usize {
+        // DanS (4) + padding (12) + entries (8 each) + Rich (4) + key (4)
+        16 + self.entries.len() * 8 + 8
+    }
+
+    /// Build with a specific XOR key.
+    /// Returns (data, size).
+    pub fn build_with_key(&self, key: u32) -> (Vec<u8>, u32) {
+        let header = RichHeader {
+            key,
+            entries: self.entries.clone(),
+            offset: 0,
+            size: self.calculate_size(),
+        };
+        let data = header.build();
+        (data, header.size as u32)
+    }
+
+    /// Build with a calculated key based on the DOS header.
+    /// Returns (data, size).
+    pub fn build_with_dos_header(&self, dos_header: &[u8]) -> (Vec<u8>, u32) {
+        let key = RichHeader::calculate_key(&self.entries, dos_header);
+        self.build_with_key(key)
+    }
+
+    /// Build into a RichHeader struct with a specific key.
+    pub fn into_header(self, key: u32) -> RichHeader {
+        let size = self.calculate_size();
+        RichHeader {
+            key,
+            entries: self.entries,
+            offset: 0,
+            size,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,5 +390,53 @@ mod tests {
         let parsed = RichHeader::parse(&pe_data).expect("Failed to parse Rich header");
         assert_eq!(parsed.key, header.key);
         assert_eq!(parsed.entries.len(), header.entries.len());
+    }
+
+    #[test]
+    fn test_rich_builder() {
+        let mut builder = RichBuilder::new();
+
+        builder.add(0x0104, 30729, 5).add(0x0105, 30729, 1);
+
+        assert_eq!(builder.entry_count(), 2);
+
+        let (data, size) = builder.build_with_key(0xABCD1234);
+        assert!(size > 0);
+        assert_eq!(data.len(), size as usize);
+        assert_eq!(size as usize, builder.calculate_size());
+
+        // Verify by parsing
+        let mut pe_data = vec![0u8; 0x200];
+        pe_data[0] = b'M';
+        pe_data[1] = b'Z';
+        pe_data[0x3C..0x40].copy_from_slice(&0x100u32.to_le_bytes());
+        pe_data[0x80..0x80 + data.len()].copy_from_slice(&data);
+
+        let parsed = RichHeader::parse(&pe_data).unwrap();
+        assert_eq!(parsed.key, 0xABCD1234);
+        assert_eq!(parsed.entries.len(), 2);
+        assert_eq!(parsed.entries[0].product_id, 0x0104);
+        assert_eq!(parsed.entries[1].product_id, 0x0105);
+    }
+
+    #[test]
+    fn test_rich_builder_from_header() {
+        let original = RichHeader {
+            key: 0x11223344,
+            entries: vec![RichEntry {
+                product_id: 0x0104,
+                build_number: 30729,
+                use_count: 3,
+            }],
+            offset: 0,
+            size: 0,
+        };
+
+        let builder = RichBuilder::from_header(&original);
+        assert_eq!(builder.entry_count(), 1);
+
+        let header = builder.into_header(0x55667788);
+        assert_eq!(header.key, 0x55667788);
+        assert_eq!(header.entries.len(), 1);
     }
 }

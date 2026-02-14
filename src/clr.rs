@@ -210,6 +210,134 @@ impl Default for CliHeader {
     }
 }
 
+/// Builder for CLI headers.
+///
+/// This provides a fluent interface for building CLI (COR20) headers for .NET assemblies.
+///
+/// # Example
+///
+/// ```
+/// use portex::clr::{CliBuilder, CliHeader};
+///
+/// let mut builder = CliBuilder::new();
+///
+/// builder
+///     .metadata(0x2000, 0x1234)
+///     .entry_point_token(0x0600_0001)
+///     .il_only(true);
+///
+/// let (data, size) = builder.build();
+/// assert_eq!(size, CliHeader::SIZE as u32);
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct CliBuilder {
+    header: CliHeader,
+}
+
+impl CliBuilder {
+    /// Create a new CLI builder with default values.
+    pub fn new() -> Self {
+        Self {
+            header: CliHeader::default(),
+        }
+    }
+
+    /// Create from an existing CLI header.
+    pub fn from_header(header: CliHeader) -> Self {
+        Self { header }
+    }
+
+    /// Set the metadata RVA and size.
+    pub fn metadata(&mut self, rva: u32, size: u32) -> &mut Self {
+        self.header.metadata_rva = rva;
+        self.header.metadata_size = size;
+        self
+    }
+
+    /// Set the entry point token (MethodDef or File token).
+    pub fn entry_point_token(&mut self, token: u32) -> &mut Self {
+        self.header.entry_point_token_or_rva = token;
+        self.header.flags &= !CliHeader::FLAG_NATIVE_ENTRYPOINT;
+        self
+    }
+
+    /// Set the native entry point RVA (rare, for mixed-mode assemblies).
+    pub fn native_entry_point(&mut self, rva: u32) -> &mut Self {
+        self.header.entry_point_token_or_rva = rva;
+        self.header.flags |= CliHeader::FLAG_NATIVE_ENTRYPOINT;
+        self
+    }
+
+    /// Set whether this is an IL-only assembly.
+    pub fn il_only(&mut self, value: bool) -> &mut Self {
+        if value {
+            self.header.flags |= CliHeader::FLAG_ILONLY;
+        } else {
+            self.header.flags &= !CliHeader::FLAG_ILONLY;
+        }
+        self
+    }
+
+    /// Set whether 32-bit is required.
+    pub fn requires_32bit(&mut self, value: bool) -> &mut Self {
+        if value {
+            self.header.flags |= CliHeader::FLAG_32BITREQUIRED;
+        } else {
+            self.header.flags &= !CliHeader::FLAG_32BITREQUIRED;
+        }
+        self
+    }
+
+    /// Set whether 32-bit is preferred.
+    pub fn prefers_32bit(&mut self, value: bool) -> &mut Self {
+        if value {
+            self.header.flags |= CliHeader::FLAG_32BITPREFERRED;
+        } else {
+            self.header.flags &= !CliHeader::FLAG_32BITPREFERRED;
+        }
+        self
+    }
+
+    /// Set the resources RVA and size.
+    pub fn resources(&mut self, rva: u32, size: u32) -> &mut Self {
+        self.header.resources_rva = rva;
+        self.header.resources_size = size;
+        self
+    }
+
+    /// Set the strong name signature RVA and size.
+    pub fn strong_name_signature(&mut self, rva: u32, size: u32) -> &mut Self {
+        self.header.strong_name_signature_rva = rva;
+        self.header.strong_name_signature_size = size;
+        self
+    }
+
+    /// Set the VTable fixups RVA and size.
+    pub fn vtable_fixups(&mut self, rva: u32, size: u32) -> &mut Self {
+        self.header.vtable_fixups_rva = rva;
+        self.header.vtable_fixups_size = size;
+        self
+    }
+
+    /// Set raw flags value.
+    pub fn flags(&mut self, flags: u32) -> &mut Self {
+        self.header.flags = flags;
+        self
+    }
+
+    /// Build the CLI header.
+    /// Returns (data, size).
+    pub fn build(&self) -> (Vec<u8>, u32) {
+        let data = self.header.to_bytes().to_vec();
+        (data, CliHeader::SIZE as u32)
+    }
+
+    /// Get the built header.
+    pub fn into_header(self) -> CliHeader {
+        self.header
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,5 +389,43 @@ mod tests {
         assert_eq!(header.cb, 72);
         assert_eq!(header.major_runtime_version, 2);
         assert_eq!(header.minor_runtime_version, 5);
+    }
+
+    #[test]
+    fn test_cli_builder() {
+        let mut builder = CliBuilder::new();
+
+        builder
+            .metadata(0x2000, 0x1234)
+            .entry_point_token(0x0600_0001)
+            .il_only(true)
+            .resources(0x3000, 0x100);
+
+        let (data, size) = builder.build();
+        assert_eq!(size, CliHeader::SIZE as u32);
+        assert_eq!(data.len(), CliHeader::SIZE);
+
+        let header = CliHeader::parse(&data).unwrap();
+        assert_eq!(header.metadata_rva, 0x2000);
+        assert_eq!(header.metadata_size, 0x1234);
+        assert_eq!(header.entry_point_token_or_rva, 0x0600_0001);
+        assert!(header.is_il_only());
+        assert_eq!(header.resources_rva, 0x3000);
+        assert_eq!(header.resources_size, 0x100);
+    }
+
+    #[test]
+    fn test_cli_builder_from_header() {
+        let original = CliHeader {
+            metadata_rva: 0x5000,
+            metadata_size: 0x2000,
+            ..Default::default()
+        };
+
+        let builder = CliBuilder::from_header(original);
+        let header = builder.into_header();
+
+        assert_eq!(header.metadata_rva, 0x5000);
+        assert_eq!(header.metadata_size, 0x2000);
     }
 }

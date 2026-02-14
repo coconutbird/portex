@@ -410,6 +410,83 @@ impl RelocationTable {
     }
 }
 
+/// Builder for relocation tables.
+///
+/// This provides a fluent interface for building relocation tables.
+///
+/// # Example
+///
+/// ```
+/// use portex::reloc::RelocationBuilder;
+///
+/// let mut builder = RelocationBuilder::new();
+///
+/// // Add relocations (automatically grouped by page)
+/// builder.add_dir64(0x1000);
+/// builder.add_dir64(0x1008);
+/// builder.add_highlow(0x2000);
+///
+/// let (data, size) = builder.build();
+/// assert!(size > 0);
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct RelocationBuilder {
+    table: RelocationTable,
+}
+
+impl RelocationBuilder {
+    /// Create a new relocation builder.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create from an existing relocation table.
+    pub fn from_table(table: RelocationTable) -> Self {
+        Self { table }
+    }
+
+    /// Add a relocation entry at a specific RVA.
+    pub fn add_relocation(&mut self, rva: u32, reloc_type: RelocationType) -> &mut Self {
+        self.table.add_relocation(rva, reloc_type);
+        self
+    }
+
+    /// Add a HIGHLOW (32-bit) relocation.
+    pub fn add_highlow(&mut self, rva: u32) -> &mut Self {
+        self.table.add_highlow(rva);
+        self
+    }
+
+    /// Add a DIR64 (64-bit) relocation.
+    pub fn add_dir64(&mut self, rva: u32) -> &mut Self {
+        self.table.add_dir64(rva);
+        self
+    }
+
+    /// Get the number of relocations added.
+    pub fn relocation_count(&self) -> usize {
+        self.table.relocation_count()
+    }
+
+    /// Calculate the total size when serialized.
+    pub fn calculate_size(&self) -> usize {
+        self.table.normalized().calculate_size()
+    }
+
+    /// Build the relocation table.
+    /// Returns (data, size).
+    pub fn build(&self) -> (Vec<u8>, u32) {
+        let data = self.table.build();
+        let size = data.len() as u32;
+        (data, size)
+    }
+
+    /// Get the underlying table (normalized).
+    pub fn into_table(self) -> RelocationTable {
+        self.table.normalized()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -479,5 +556,35 @@ mod tests {
         let parsed = RelocationTable::parse(0, data.len() as u32, read_fn).unwrap();
         assert_eq!(parsed.blocks.len(), 2); // Two pages: 0x1000 and 0x2000
         assert_eq!(parsed.relocation_count(), 4);
+    }
+
+    #[test]
+    fn test_relocation_builder() {
+        let mut builder = RelocationBuilder::new();
+
+        builder
+            .add_dir64(0x1000)
+            .add_dir64(0x1008)
+            .add_highlow(0x2000);
+
+        assert_eq!(builder.relocation_count(), 3);
+
+        let (data, size) = builder.build();
+        assert!(size > 0);
+        assert_eq!(data.len(), size as usize);
+
+        // Parse it back
+        let read_fn = |rva: u32, len: usize| -> Option<Vec<u8>> {
+            let offset = rva as usize;
+            if offset >= data.len() {
+                return None;
+            }
+            let available = (data.len() - offset).min(len);
+            Some(data[offset..offset + available].to_vec())
+        };
+
+        let parsed = RelocationTable::parse(0, size, read_fn).unwrap();
+        assert_eq!(parsed.blocks.len(), 2);
+        assert_eq!(parsed.relocation_count(), 3);
     }
 }
