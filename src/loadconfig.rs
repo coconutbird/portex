@@ -380,6 +380,139 @@ pub mod guard_flags {
     pub const RETPOLINE_PRESENT: u32 = 0x00100000;
 }
 
+/// Builder for Load Configuration directories.
+///
+/// LoadConfig directories contain security features like SafeSEH and CFG.
+/// This builder simplifies creating and modifying these complex structures.
+///
+/// # Example
+///
+/// ```
+/// use portex::loadconfig::{LoadConfigBuilder, guard_flags};
+///
+/// // Create a LoadConfig builder for 64-bit PE
+/// let builder = LoadConfigBuilder::new(true);
+///
+/// // Build with security cookie
+/// let (data, size) = builder.build_with_cookie(0x140001000);
+/// assert!(size > 0);
+/// ```
+#[derive(Debug, Clone)]
+pub struct LoadConfigBuilder {
+    /// Whether this is a 64-bit PE.
+    is_64bit: bool,
+}
+
+impl LoadConfigBuilder {
+    /// Create a new LoadConfig builder.
+    pub fn new(is_64bit: bool) -> Self {
+        Self { is_64bit }
+    }
+
+    /// Build a basic LoadConfig with just a security cookie.
+    ///
+    /// # Arguments
+    /// * `security_cookie_va` - Virtual address of the security cookie
+    ///
+    /// Returns (data, size)
+    pub fn build_with_cookie(&self, security_cookie_va: u64) -> (Vec<u8>, u32) {
+        if self.is_64bit {
+            let config = LoadConfigDirectory64 {
+                size: LoadConfigDirectory64::MIN_SIZE as u32,
+                security_cookie: security_cookie_va,
+                ..Default::default()
+            };
+            let data = config.to_bytes();
+            let size = data.len() as u32;
+            (data, size)
+        } else {
+            let config = LoadConfigDirectory32 {
+                size: LoadConfigDirectory32::MIN_SIZE as u32,
+                security_cookie: security_cookie_va as u32,
+                ..Default::default()
+            };
+            let data = config.to_bytes();
+            let size = data.len() as u32;
+            (data, size)
+        }
+    }
+
+    /// Build from an existing LoadConfigDirectory.
+    ///
+    /// Returns (data, size)
+    pub fn build(&self, config: &LoadConfigDirectory) -> (Vec<u8>, u32) {
+        let data = config.to_bytes();
+        let size = data.len() as u32;
+        (data, size)
+    }
+
+    /// Build a LoadConfig with CFG (Control Flow Guard) settings.
+    ///
+    /// # Arguments
+    /// * `security_cookie_va` - Virtual address of the security cookie
+    /// * `guard_cf_check_va` - Virtual address of CFG check function
+    /// * `guard_cf_dispatch_va` - Virtual address of CFG dispatch function
+    /// * `guard_cf_table_va` - Virtual address of CFG function table
+    /// * `guard_cf_count` - Number of entries in CFG function table
+    /// * `flags` - CFG guard flags
+    ///
+    /// Returns (data, size)
+    pub fn build_with_cfg(
+        &self,
+        security_cookie_va: u64,
+        guard_cf_check_va: u64,
+        guard_cf_dispatch_va: u64,
+        guard_cf_table_va: u64,
+        guard_cf_count: u64,
+        flags: u32,
+    ) -> (Vec<u8>, u32) {
+        if self.is_64bit {
+            let config = LoadConfigDirectory64 {
+                size: LoadConfigDirectory64::SIZE_WITH_CFG as u32,
+                security_cookie: security_cookie_va,
+                guard_cf_check_function_pointer: guard_cf_check_va,
+                guard_cf_dispatch_function_pointer: guard_cf_dispatch_va,
+                guard_cf_function_table: guard_cf_table_va,
+                guard_cf_function_count: guard_cf_count,
+                guard_flags: flags,
+                ..Default::default()
+            };
+            let data = config.to_bytes();
+            let size = data.len() as u32;
+            (data, size)
+        } else {
+            let config = LoadConfigDirectory32 {
+                size: LoadConfigDirectory32::SIZE_WITH_CFG as u32,
+                security_cookie: security_cookie_va as u32,
+                guard_cf_check_function_pointer: guard_cf_check_va as u32,
+                guard_cf_dispatch_function_pointer: guard_cf_dispatch_va as u32,
+                guard_cf_function_table: guard_cf_table_va as u32,
+                guard_cf_function_count: guard_cf_count as u32,
+                guard_flags: flags,
+                ..Default::default()
+            };
+            let data = config.to_bytes();
+            let size = data.len() as u32;
+            (data, size)
+        }
+    }
+
+    /// Calculate the size needed for LoadConfig data.
+    pub fn size(&self, with_cfg: bool) -> usize {
+        if self.is_64bit {
+            if with_cfg {
+                LoadConfigDirectory64::SIZE_WITH_CFG
+            } else {
+                LoadConfigDirectory64::MIN_SIZE
+            }
+        } else if with_cfg {
+            LoadConfigDirectory32::SIZE_WITH_CFG
+        } else {
+            LoadConfigDirectory32::MIN_SIZE
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

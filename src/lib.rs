@@ -91,7 +91,9 @@ pub use export::{
 };
 pub use import::{ImportDescriptor, ImportTable, ImportTableBuilder, ImportThunk, ImportedDll};
 pub use layout::LayoutConfig;
-pub use loadconfig::{LoadConfigDirectory, LoadConfigDirectory32, LoadConfigDirectory64};
+pub use loadconfig::{
+    LoadConfigBuilder, LoadConfigDirectory, LoadConfigDirectory32, LoadConfigDirectory64,
+};
 pub use optional::{OptionalHeader, OptionalHeader32, OptionalHeader64, Subsystem};
 pub use pe::{PE, PEHeaders};
 pub use reader::{BaseAddressReader, FileReader, Reader, SliceReader, VecReader};

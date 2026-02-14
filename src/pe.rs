@@ -1029,6 +1029,59 @@ impl PE {
         }
     }
 
+    /// Update the load config directory.
+    ///
+    /// Creates or replaces the LoadConfig directory with new data.
+    /// If target_section is None, uses ".rdata" or the last section.
+    ///
+    /// # Arguments
+    /// * `config` - The LoadConfig directory to write
+    /// * `target_section` - Optional section to place the LoadConfig data
+    ///
+    /// Returns the RVA where the LoadConfig directory was written.
+    pub fn update_load_config(
+        &mut self,
+        config: &crate::loadconfig::LoadConfigDirectory,
+        target_section: Option<&str>,
+    ) -> Result<u32> {
+        use crate::data_dir::DataDirectoryType;
+        use crate::loadconfig::LoadConfigBuilder;
+
+        // Find target section
+        let section_name: String = target_section
+            .map(|s| s.to_string())
+            .or_else(|| {
+                if self.section_by_name(".rdata").is_some() {
+                    Some(".rdata".to_string())
+                } else {
+                    self.sections.last().map(|s| s.name().to_string())
+                }
+            })
+            .unwrap_or_else(|| ".rdata".to_string());
+
+        let section_idx = self.sections.iter().position(|s| s.name() == section_name);
+        let section_idx = match section_idx {
+            Some(idx) => idx,
+            None => return Err(crate::Error::invalid_section(&section_name)),
+        };
+
+        // Build LoadConfig data
+        let builder = LoadConfigBuilder::new(self.is_64bit());
+        let (data, dir_size) = builder.build(config);
+
+        // Calculate append RVA
+        let section = &self.sections[section_idx];
+        let append_rva = section.header.virtual_address + section.header.virtual_size;
+
+        // Append data to section
+        self.sections[section_idx].append_data(&data);
+
+        self.update_layout();
+        self.set_data_directory(DataDirectoryType::LoadConfig, append_rva, dir_size);
+
+        Ok(append_rva)
+    }
+
     /// Parse the security directory (Authenticode certificates).
     ///
     /// Note: Unlike other data directories, this uses a **file offset** (not RVA).
