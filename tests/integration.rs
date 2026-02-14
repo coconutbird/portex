@@ -3,12 +3,12 @@
 //! These tests perform roundtrip operations: create/parse → modify → rebuild → re-parse.
 
 use portex::{
+    ExceptionDirectory, ExportTable, ImportTable, ImportThunk, MachineType, PE, PEBuilder,
+    RelocationTable, RelocationType, Subsystem,
     debug::CodeViewRsds,
     loadconfig::{LoadConfigDirectory, LoadConfigDirectory64},
     section::characteristics,
     tls::TlsInfo,
-    ExceptionDirectory, ExportTable, ImportTable, ImportThunk, MachineType, PEBuilder,
-    RelocationTable, RelocationType, Subsystem, PE,
 };
 
 /// Test that PEBuilder creates a valid PE that can be parsed back.
