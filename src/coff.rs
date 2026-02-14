@@ -9,6 +9,7 @@ pub const PE_SIGNATURE: u32 = 0x00004550;
 /// Machine type constants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
+#[non_exhaustive]
 pub enum MachineType {
     /// Unknown machine type.
     Unknown = 0x0000,

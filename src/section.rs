@@ -2,6 +2,7 @@
 
 use crate::reader::Reader;
 use crate::{Error, Result};
+use std::borrow::Cow;
 
 /// Section characteristics flags.
 pub mod characteristics {
@@ -55,9 +56,21 @@ impl SectionHeader {
     pub const SIZE: usize = 40;
 
     /// Get the section name as a string (trimmed of null bytes).
-    pub fn name_str(&self) -> &str {
+    ///
+    /// PE section names are not guaranteed to be valid UTF-8. This method
+    /// returns a `Cow<str>` that will be borrowed if the name is valid UTF-8,
+    /// or owned with lossy conversion if it contains invalid bytes.
+    #[must_use]
+    pub fn name_str(&self) -> Cow<'_, str> {
         let end = self.name.iter().position(|&b| b == 0).unwrap_or(8);
-        std::str::from_utf8(&self.name[..end]).unwrap_or("")
+        String::from_utf8_lossy(&self.name[..end])
+    }
+
+    /// Get the section name as raw bytes (without null padding).
+    #[must_use]
+    pub fn name_bytes(&self) -> &[u8] {
+        let end = self.name.iter().position(|&b| b == 0).unwrap_or(8);
+        &self.name[..end]
     }
 
     /// Set the section name from a string.
@@ -209,7 +222,8 @@ impl Section {
     }
 
     /// Get the section name.
-    pub fn name(&self) -> &str {
+    #[must_use]
+    pub fn name(&self) -> Cow<'_, str> {
         self.header.name_str()
     }
 

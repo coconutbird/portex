@@ -54,6 +54,11 @@
 
 use crate::{Error, Result};
 
+/// Maximum length for DLL and function names when reading import/export tables.
+/// This is a reasonable limit that covers all valid Windows DLL names while
+/// preventing unbounded reads on malformed PE files.
+const MAX_NAME_LEN: usize = 256;
+
 /// IMAGE_IMPORT_DESCRIPTOR - 20 bytes
 /// Describes one imported DLL.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -228,8 +233,7 @@ impl ImportTable {
     where
         F: Fn(u32, usize) -> Option<Vec<u8>>,
     {
-        // Read up to 256 bytes for a DLL name
-        let data = read_at_rva(rva, 256).ok_or(Error::invalid_rva(rva))?;
+        let data = read_at_rva(rva, MAX_NAME_LEN).ok_or(Error::invalid_rva(rva))?;
         let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
         String::from_utf8(data[..end].to_vec()).map_err(|_| Error::invalid_utf8())
     }

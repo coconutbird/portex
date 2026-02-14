@@ -118,6 +118,7 @@ pub struct Error {
 
 /// The kind of error that occurred.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ErrorKind {
     /// I/O error during read/write operations.
     Io(io::Error),

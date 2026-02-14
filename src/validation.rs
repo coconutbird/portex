@@ -41,6 +41,7 @@ impl fmt::Display for ValidationLevel {
 
 /// Type of validation issue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ValidationCode {
     /// DOS signature is invalid.
     InvalidDosSignature,

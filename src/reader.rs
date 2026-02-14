@@ -81,7 +81,10 @@ impl<'a> SliceReader<'a> {
 
 impl Reader for SliceReader<'_> {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
-        let offset = offset as usize;
+        let offset = match usize::try_from(offset) {
+            Ok(o) => o,
+            Err(_) => return Ok(0), // Offset too large for this platform
+        };
         if offset >= self.data.len() {
             return Ok(0);
         }
@@ -118,7 +121,10 @@ impl VecReader {
 
 impl Reader for VecReader {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
-        let offset = offset as usize;
+        let offset = match usize::try_from(offset) {
+            Ok(o) => o,
+            Err(_) => return Ok(0), // Offset too large for this platform
+        };
         if offset >= self.data.len() {
             return Ok(0);
         }
@@ -134,12 +140,26 @@ impl Reader for VecReader {
 }
 
 /// Reader implementation for files on disk.
+///
+/// Note: `FileReader` uses `RefCell` internally and is therefore `!Sync`.
+/// It can be used from a single thread but not shared across threads.
+/// For multi-threaded scenarios, consider reading the file into a `VecReader`.
 pub struct FileReader {
     file: std::cell::RefCell<File>,
     size: u64,
 }
 
+impl std::fmt::Debug for FileReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileReader")
+            .field("size", &self.size)
+            .finish_non_exhaustive()
+    }
+}
+
 impl FileReader {
+    /// Open a file for reading.
+    #[must_use = "opening a file may fail"]
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let mut file = File::open(path)?;
         let size = file.seek(SeekFrom::End(0))?;
@@ -149,6 +169,8 @@ impl FileReader {
         })
     }
 
+    /// Get the size of the file in bytes.
+    #[must_use]
     pub fn file_size(&self) -> u64 {
         self.size
     }
@@ -191,7 +213,10 @@ impl BaseAddressReader {
 
 impl Reader for BaseAddressReader {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
-        let offset = offset as usize;
+        let offset = match usize::try_from(offset) {
+            Ok(o) => o,
+            Err(_) => return Ok(0), // Offset too large for this platform
+        };
         if let Some(size) = self.size {
             if offset >= size {
                 return Ok(0);

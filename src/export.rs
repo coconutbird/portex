@@ -50,6 +50,11 @@
 
 use crate::{Error, Result};
 
+/// Maximum length for DLL and function names when reading export tables.
+/// This is a reasonable limit that covers all valid Windows symbol names while
+/// preventing unbounded reads on malformed PE files.
+const MAX_NAME_LEN: usize = 256;
+
 /// IMAGE_EXPORT_DIRECTORY - 40 bytes
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ExportDirectory {
@@ -192,7 +197,7 @@ impl ExportTable {
     where
         F: Fn(u32, usize) -> Option<Vec<u8>>,
     {
-        let data = read_at_rva(rva, 256).ok_or(Error::invalid_rva(rva))?;
+        let data = read_at_rva(rva, MAX_NAME_LEN).ok_or(Error::invalid_rva(rva))?;
         let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
         String::from_utf8(data[..end].to_vec()).map_err(|_| Error::invalid_utf8())
     }

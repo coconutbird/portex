@@ -103,6 +103,7 @@ pub struct PEHeaders {
 
 impl PE {
     /// Parse a PE file from a byte slice.
+    #[must_use = "parsing returns a PE structure that should be used"]
     pub fn parse(data: &[u8]) -> Result<Self> {
         let reader = SliceReader::new(data);
         let headers = PEHeaders::read_from(&reader, 0)?;
@@ -138,22 +139,26 @@ impl PE {
     }
 
     /// Load a PE file from disk.
+    #[must_use = "loading returns a PE structure that should be used"]
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let data = std::fs::read(path)?;
         Self::parse(&data)
     }
 
     /// Check if this is a 64-bit PE file.
+    #[must_use]
     pub fn is_64bit(&self) -> bool {
         self.optional_header.is_pe32plus()
     }
 
     /// Check if this is a DLL.
+    #[must_use]
     pub fn is_dll(&self) -> bool {
         self.coff_header.is_dll()
     }
 
     /// Get a section by name.
+    #[must_use]
     pub fn section_by_name(&self, name: &str) -> Option<&Section> {
         self.sections.iter().find(|s| s.name() == name)
     }
@@ -164,21 +169,25 @@ impl PE {
     }
 
     /// Find the section containing an RVA.
+    #[must_use]
     pub fn section_by_rva(&self, rva: u32) -> Option<&Section> {
         self.sections.iter().find(|s| s.contains_rva(rva))
     }
 
     /// Find the mutable section containing an RVA.
+    #[must_use]
     pub fn section_by_rva_mut(&mut self, rva: u32) -> Option<&mut Section> {
         self.sections.iter_mut().find(|s| s.contains_rva(rva))
     }
 
     /// Read data at an RVA.
+    #[must_use]
     pub fn read_at_rva(&self, rva: u32, len: usize) -> Option<&[u8]> {
         self.section_by_rva(rva)?.data_at_rva(rva, len)
     }
 
     /// Write data at an RVA.
+    #[must_use]
     pub fn write_at_rva(&mut self, rva: u32, data: &[u8]) -> Option<()> {
         let section = self.section_by_rva_mut(rva)?;
         let slice = section.data_at_rva_mut(rva, data.len())?;
@@ -187,6 +196,7 @@ impl PE {
     }
 
     /// Convert an RVA to a file offset.
+    #[must_use]
     pub fn rva_to_offset(&self, rva: u32) -> Option<u32> {
         for section in &self.sections {
             if let Some(offset) = section.header.rva_to_offset(rva) {
@@ -210,16 +220,19 @@ impl PE {
     }
 
     /// Get the entry point RVA.
+    #[must_use]
     pub fn entry_point(&self) -> u32 {
         self.optional_header.address_of_entry_point()
     }
 
     /// Get the image base.
+    #[must_use]
     pub fn image_base(&self) -> u64 {
         self.optional_header.image_base()
     }
 
     /// Get a data directory entry by type.
+    #[must_use]
     pub fn data_directory(
         &self,
         dir_type: crate::data_dir::DataDirectoryType,
@@ -230,11 +243,13 @@ impl PE {
     }
 
     /// Get a data directory entry by index (for advanced use).
+    #[must_use]
     pub fn data_directory_by_index(&self, index: usize) -> Option<&crate::data_dir::DataDirectory> {
         self.optional_header.data_directories().get(index)
     }
 
     /// Parse the import table.
+    #[must_use = "parsing returns an import table that should be used"]
     pub fn imports(&self) -> Result<crate::import::ImportTable> {
         use crate::data_dir::DataDirectoryType;
 
@@ -253,6 +268,7 @@ impl PE {
     }
 
     /// Parse the export table.
+    #[must_use = "parsing returns an export table that should be used"]
     pub fn exports(&self) -> Result<crate::export::ExportTable> {
         use crate::data_dir::DataDirectoryType;
 
@@ -271,6 +287,7 @@ impl PE {
     }
 
     /// Parse the relocation table.
+    #[must_use = "parsing returns a relocation table that should be used"]
     pub fn relocations(&self) -> Result<crate::reloc::RelocationTable> {
         use crate::data_dir::DataDirectoryType;
 
@@ -581,7 +598,9 @@ impl PE {
         let mut output = vec![0u8; file_size as usize];
 
         // Write DOS header
-        self.dos_header.write(&mut output[0..DosHeader::SIZE]).ok();
+        self.dos_header
+            .write(&mut output[0..DosHeader::SIZE])
+            .expect("DOS header write failed: buffer size was calculated");
 
         // Write DOS stub
         let stub_start = DosHeader::SIZE;
@@ -598,14 +617,14 @@ impl PE {
         let coff_offset = pe_offset + 4;
         self.coff_header
             .write(&mut output[coff_offset..coff_offset + CoffHeader::SIZE])
-            .ok();
+            .expect("COFF header write failed: buffer size was calculated");
 
         // Write optional header
         let optional_offset = coff_offset + CoffHeader::SIZE;
         let optional_size = self.optional_header.size();
         self.optional_header
             .write(&mut output[optional_offset..optional_offset + optional_size])
-            .ok();
+            .expect("Optional header write failed: buffer size was calculated");
 
         // Write section headers
         let sections_offset = optional_offset + self.coff_header.size_of_optional_header as usize;
@@ -614,7 +633,7 @@ impl PE {
             section
                 .header
                 .write(&mut output[offset..offset + SectionHeader::SIZE])
-                .ok();
+                .expect("Section header write failed: buffer size was calculated");
         }
 
         // Write section data
@@ -957,6 +976,7 @@ impl PE {
     ///     }
     /// }
     /// ```
+    #[must_use]
     pub fn validate(&self) -> crate::validation::ValidationResult {
         use crate::validation::{ValidationCode, ValidationIssue, ValidationResult};
 
@@ -1104,12 +1124,31 @@ impl PE {
             }
         }
 
+        // Check checksum (only warn if non-zero and doesn't match)
+        let stored_checksum = match &self.optional_header {
+            OptionalHeader::Pe32(h) => h.check_sum,
+            OptionalHeader::Pe32Plus(h) => h.check_sum,
+        };
+        if stored_checksum != 0 {
+            let computed = self.calculate_checksum();
+            if stored_checksum != computed {
+                result.push(ValidationIssue::warning(
+                    ValidationCode::InvalidChecksum,
+                    format!(
+                        "Checksum mismatch: stored {:#x}, computed {:#x}",
+                        stored_checksum, computed
+                    ),
+                ));
+            }
+        }
+
         result
     }
 }
 
 impl PEHeaders {
     /// Read PE headers from any Reader implementation.
+    #[must_use = "parsing returns PE headers that should be used"]
     pub fn read_from<R: Reader>(reader: &R, base_offset: u64) -> Result<Self> {
         // Parse DOS header
         let dos_header = DosHeader::read_from(reader, base_offset)?;
@@ -1146,33 +1185,39 @@ impl PEHeaders {
     }
 
     /// Read headers from a file on disk.
+    #[must_use = "loading returns PE headers that should be used"]
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let reader = FileReader::open(path)?;
         Self::read_from(&reader, 0)
     }
 
     /// Read headers from a byte slice.
+    #[must_use = "parsing returns PE headers that should be used"]
     pub fn from_slice(data: &[u8]) -> Result<Self> {
         let reader = SliceReader::new(data);
         Self::read_from(&reader, 0)
     }
 
     /// Check if this is a 64-bit PE.
+    #[must_use]
     pub fn is_64bit(&self) -> bool {
         self.optional_header.is_pe32plus()
     }
 
     /// Check if this is a DLL.
+    #[must_use]
     pub fn is_dll(&self) -> bool {
         self.coff_header.is_dll()
     }
 
     /// Get a section header by name.
+    #[must_use]
     pub fn section_by_name(&self, name: &str) -> Option<&SectionHeader> {
         self.section_headers.iter().find(|s| s.name_str() == name)
     }
 
     /// Convert an RVA to a file offset.
+    #[must_use]
     pub fn rva_to_offset(&self, rva: u32) -> Option<u32> {
         for section in &self.section_headers {
             if let Some(offset) = section.rva_to_offset(rva) {

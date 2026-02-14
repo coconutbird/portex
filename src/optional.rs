@@ -12,6 +12,7 @@ pub const PE32PLUS_MAGIC: u16 = 0x20B;
 /// Windows subsystem values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
+#[non_exhaustive]
 pub enum Subsystem {
     Unknown = 0,
     Native = 1,
