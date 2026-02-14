@@ -139,6 +139,14 @@ impl DataDirectory {
         Ok(())
     }
 
+    /// Serialize to a byte array.
+    pub fn to_bytes(&self) -> [u8; Self::SIZE] {
+        let mut buf = [0u8; Self::SIZE];
+        buf[0..4].copy_from_slice(&self.virtual_address.to_le_bytes());
+        buf[4..8].copy_from_slice(&self.size.to_le_bytes());
+        buf
+    }
+
     /// Check if this directory entry is present (non-zero).
     pub fn is_present(&self) -> bool {
         self.virtual_address != 0 || self.size != 0
@@ -184,6 +192,18 @@ mod tests {
         let parsed = DataDirectory::parse(&buf).unwrap();
         assert_eq!(dir, parsed);
         assert!(parsed.is_present());
+    }
+
+    #[test]
+    fn test_data_directory_to_bytes_roundtrip() {
+        let dir = DataDirectory {
+            virtual_address: 0xABCD1234,
+            size: 0x5678,
+        };
+
+        let bytes = dir.to_bytes();
+        let parsed = DataDirectory::parse(&bytes).unwrap();
+        assert_eq!(dir, parsed);
     }
 
     #[test]
