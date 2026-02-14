@@ -6,3 +6,8 @@ description = "A PE (Portable Executable) file reader/writer library"
 license = "MIT"
 
 [dependencies]
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+# Pedantic is too strict for existing codebase - enable incrementally if desired
+# pedantic = { level = "warn", priority = -1 }
