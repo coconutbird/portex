@@ -707,6 +707,38 @@ impl PE {
         }
     }
 
+    /// Parse the CLI header (IMAGE_COR20_HEADER) for .NET assemblies.
+    ///
+    /// Returns `None` if the CLR data directory is not present.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use portex::PE;
+    ///
+    /// let pe = PE::from_file("managed.exe")?;
+    /// if let Some(cli) = pe.cli_header()? {
+    ///     println!("Metadata at RVA {:#x}", cli.metadata_rva);
+    /// }
+    /// # Ok::<(), portex::Error>(())
+    /// ```
+    pub fn cli_header(&self) -> Result<Option<crate::clr::CliHeader>> {
+        use crate::data_dir::DataDirectoryType;
+
+        let dir = self
+            .data_directory(DataDirectoryType::ClrRuntime)
+            .filter(|d| d.is_present());
+        match dir {
+            Some(d) => {
+                let data = self
+                    .read_at_rva(d.virtual_address, crate::clr::CliHeader::SIZE)
+                    .ok_or_else(|| crate::Error::invalid_rva(d.virtual_address))?;
+                Ok(Some(crate::clr::CliHeader::parse(data)?))
+            }
+            None => Ok(None),
+        }
+    }
+
     /// Parse the rich header (if present).
     pub fn rich_header(&self) -> Option<crate::rich::RichHeader> {
         crate::rich::RichHeader::parse(&self.dos_stub)
@@ -749,6 +781,367 @@ impl PE {
             }
             None => Ok(None),
         }
+    }
+
+    /// Parse the security directory (Authenticode certificates).
+    ///
+    /// Note: Unlike other data directories, this uses a **file offset** (not RVA).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use portex::PE;
+    ///
+    /// let pe = PE::from_file("signed.exe")?;
+    /// if let Some(security) = pe.security()? {
+    ///     println!("Found {} certificate(s)", security.certificates.len());
+    /// }
+    /// # Ok::<(), portex::Error>(())
+    /// ```
+    ///
+    /// # Note
+    ///
+    /// This method requires raw file bytes. Use `security_from_bytes` if you have
+    /// the original file data, as security certificates are stored at a file offset
+    /// (not RVA), typically in an overlay area after section data.
+    pub fn security(&self) -> Result<Option<crate::security::SecurityDirectory>> {
+        // Security directory uses file offset, not RVA.
+        // The PE struct only stores section data, not raw file bytes.
+        // Certificates are typically in an overlay area after all sections.
+        // Return None - use security_from_bytes() with raw file data instead.
+        Ok(None)
+    }
+
+    /// Parse the security directory from raw file bytes.
+    ///
+    /// The security directory is unique among data directories because it uses
+    /// a **file offset** (not RVA). Certificates are typically stored in an
+    /// overlay area after section data.
+    ///
+    /// # Arguments
+    ///
+    /// * `file_data` - The complete raw PE file bytes
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use portex::PE;
+    ///
+    /// let file_data = std::fs::read("signed.exe")?;
+    /// let pe = PE::parse(&file_data)?;
+    /// if let Some(security) = pe.security_from_bytes(&file_data)? {
+    ///     println!("Found {} certificate(s)", security.certificates.len());
+    /// }
+    /// # Ok::<(), portex::Error>(())
+    /// ```
+    pub fn security_from_bytes(
+        &self,
+        file_data: &[u8],
+    ) -> Result<Option<crate::security::SecurityDirectory>> {
+        use crate::data_dir::DataDirectoryType;
+
+        let dir = self
+            .data_directory(DataDirectoryType::Security)
+            .filter(|d| d.is_present());
+        match dir {
+            Some(d) => {
+                // Security directory uses file offset, not RVA
+                let offset = d.virtual_address as usize;
+                let size = d.size as usize;
+                if offset.saturating_add(size) > file_data.len() {
+                    return Err(crate::Error::invalid_data_directory(format!(
+                        "security directory at offset {:#x} with size {} exceeds file size {}",
+                        offset,
+                        size,
+                        file_data.len()
+                    )));
+                }
+                let data = &file_data[offset..offset + size];
+                Ok(Some(crate::security::SecurityDirectory::parse(data)?))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Prepare security certificate data for appending to the file.
+    ///
+    /// Unlike other data directories, the security directory uses FILE OFFSETS
+    /// (not RVAs) and stores data in the overlay area after all sections.
+    ///
+    /// This method builds the certificate data and returns:
+    /// - The data to append to the end of the file
+    /// - The file offset where it should be written (end of current file)
+    ///
+    /// After appending the data, call `set_data_directory()` with the returned offset.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use portex::{PE, SecurityDirectory, Certificate, CertificateRevision, CertificateType};
+    /// use portex::data_dir::DataDirectoryType;
+    ///
+    /// let mut file_data = std::fs::read("unsigned.exe")?;
+    /// let mut pe = PE::parse(&file_data)?;
+    ///
+    /// let cert_data = vec![/* ... PKCS#7 data ... */];
+    /// let dir = SecurityDirectory {
+    ///     certificates: vec![Certificate {
+    ///         length: 0,
+    ///         revision: CertificateRevision::Revision2,
+    ///         certificate_type: CertificateType::PkcsSignedData,
+    ///         data: cert_data,
+    ///     }],
+    /// };
+    ///
+    /// let (security_data, file_offset) = pe.prepare_security_update(&dir, file_data.len());
+    /// file_data.extend_from_slice(&security_data);
+    /// pe.set_data_directory(DataDirectoryType::Security, file_offset, security_data.len() as u32);
+    /// # Ok::<(), portex::Error>(())
+    /// ```
+    pub fn prepare_security_update(
+        &self,
+        directory: &crate::security::SecurityDirectory,
+        current_file_size: usize,
+    ) -> (Vec<u8>, u32) {
+        let builder = crate::security::SecurityBuilder::new();
+        let data = builder.build(directory);
+
+        // Security data must be 8-byte aligned, so align the file offset
+        let aligned_offset = (current_file_size + 7) & !7;
+        let padding_needed = aligned_offset - current_file_size;
+
+        // Prepend padding if needed
+        let mut result = vec![0u8; padding_needed];
+        result.extend_from_slice(&data);
+
+        (result, aligned_offset as u32)
+    }
+
+    /// Clear security certificates from the PE.
+    ///
+    /// This only clears the data directory pointer; the actual certificate
+    /// data in the overlay area will remain in the file until overwritten
+    /// or the file is truncated.
+    pub fn clear_security(&mut self) {
+        use crate::data_dir::DataDirectoryType;
+        self.clear_data_directory(DataDirectoryType::Security);
+    }
+
+    /// Parse the bound import directory.
+    ///
+    /// Bound imports are a legacy optimization for faster DLL loading.
+    pub fn bound_imports(&self) -> Result<Option<crate::bound_import::BoundImportDirectory>> {
+        use crate::data_dir::DataDirectoryType;
+
+        let dir = self
+            .data_directory(DataDirectoryType::BoundImport)
+            .filter(|d| d.is_present());
+        match dir {
+            Some(d) => {
+                let data = self
+                    .read_at_rva(d.virtual_address, d.size as usize)
+                    .ok_or_else(|| crate::Error::invalid_rva(d.virtual_address))?;
+                Ok(Some(crate::bound_import::BoundImportDirectory::parse(
+                    data,
+                )?))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Update bound imports: tries in-place replacement first, otherwise appends to target section.
+    ///
+    /// Bound imports are a legacy optimization that pre-resolves import addresses at link time.
+    /// Returns the RVA where the bound import data was written.
+    pub fn update_bound_imports(
+        &mut self,
+        directory: crate::bound_import::BoundImportDirectory,
+        target_section: Option<&str>,
+    ) -> Result<u32> {
+        use crate::data_dir::DataDirectoryType;
+
+        if directory.descriptors.is_empty() {
+            self.clear_data_directory(DataDirectoryType::BoundImport);
+            return Ok(0);
+        }
+
+        let builder = crate::bound_import::BoundImportBuilder::new();
+        let (data, _) = builder.build(&directory);
+        let required_size = data.len();
+
+        // Check if we can replace in-place
+        let existing_dir = self.data_directory(DataDirectoryType::BoundImport).cloned();
+        if let Some(ref dir) = existing_dir
+            && dir.is_present()
+            && dir.size as usize >= required_size
+            && self.write_at_rva(dir.virtual_address, &data).is_some()
+        {
+            self.set_data_directory(
+                DataDirectoryType::BoundImport,
+                dir.virtual_address,
+                data.len() as u32,
+            );
+            return Ok(dir.virtual_address);
+        }
+
+        // Find target section
+        let section_name: String = target_section
+            .map(|s| s.to_string())
+            .or_else(|| {
+                if let Some(ref dir) = existing_dir
+                    && dir.is_present()
+                    && let Some(section) = self.section_by_rva(dir.virtual_address)
+                {
+                    return Some(section.name().to_string());
+                }
+                None
+            })
+            .or_else(|| {
+                if self.section_by_name(".rdata").is_some() {
+                    Some(".rdata".to_string())
+                } else {
+                    self.sections.last().map(|s| s.name().to_string())
+                }
+            })
+            .unwrap_or_else(|| ".rdata".to_string());
+
+        let section_idx = self.sections.iter().position(|s| s.name() == section_name);
+        let section_idx = match section_idx {
+            Some(idx) => idx,
+            None => return Err(crate::Error::invalid_section(section_name)),
+        };
+
+        let append_rva = {
+            let section = &self.sections[section_idx];
+            section.header.virtual_address + section.header.virtual_size
+        };
+
+        self.sections[section_idx].append_data(&data);
+        self.set_data_directory(
+            DataDirectoryType::BoundImport,
+            append_rva,
+            data.len() as u32,
+        );
+
+        Ok(append_rva)
+    }
+
+    /// Parse the delay-load import directory.
+    ///
+    /// Delay-loaded DLLs are loaded on first use, not at startup.
+    pub fn delay_imports(&self) -> Result<crate::delay_import::DelayImportDirectory> {
+        use crate::data_dir::DataDirectoryType;
+
+        let dir = self
+            .data_directory(DataDirectoryType::DelayImport)
+            .filter(|d| d.is_present());
+        let is_64bit = matches!(
+            self.optional_header,
+            crate::optional::OptionalHeader::Pe32Plus(_)
+        );
+        match dir {
+            Some(d) => {
+                let read_fn = |rva: u32, len: usize| -> Option<Vec<u8>> {
+                    self.read_at_rva(rva, len).map(|s| s.to_vec())
+                };
+                crate::delay_import::DelayImportDirectory::parse(
+                    d.virtual_address,
+                    is_64bit,
+                    read_fn,
+                )
+            }
+            None => Ok(crate::delay_import::DelayImportDirectory::default()),
+        }
+    }
+
+    /// Update delay imports: tries in-place replacement first, otherwise appends to target section.
+    ///
+    /// Delay-load imports allow DLLs to be loaded on first use rather than at startup.
+    /// Returns the RVA where the delay import data was written.
+    pub fn update_delay_imports(
+        &mut self,
+        directory: &crate::delay_import::DelayImportDirectory,
+        target_section: Option<&str>,
+    ) -> Result<u32> {
+        use crate::data_dir::DataDirectoryType;
+
+        if directory.dlls.is_empty() {
+            self.clear_data_directory(DataDirectoryType::DelayImport);
+            return Ok(0);
+        }
+
+        // Determine if 64-bit
+        let is_64bit = matches!(
+            self.optional_header,
+            crate::optional::OptionalHeader::Pe32Plus(_)
+        );
+
+        // Find target section first to get the base RVA
+        let existing_dir = self.data_directory(DataDirectoryType::DelayImport).cloned();
+        let section_name: String = target_section
+            .map(|s| s.to_string())
+            .or_else(|| {
+                if let Some(ref dir) = existing_dir
+                    && dir.is_present()
+                    && let Some(section) = self.section_by_rva(dir.virtual_address)
+                {
+                    return Some(section.name().to_string());
+                }
+                None
+            })
+            .or_else(|| {
+                if self.section_by_name(".rdata").is_some() {
+                    Some(".rdata".to_string())
+                } else if self.section_by_name(".didat").is_some() {
+                    Some(".didat".to_string())
+                } else {
+                    self.sections.last().map(|s| s.name().to_string())
+                }
+            })
+            .unwrap_or_else(|| ".rdata".to_string());
+
+        let section_idx = self.sections.iter().position(|s| s.name() == section_name);
+        let section_idx = match section_idx {
+            Some(idx) => idx,
+            None => return Err(crate::Error::invalid_section(section_name)),
+        };
+
+        // Calculate the RVA where we'll place the data
+        let base_rva = {
+            let section = &self.sections[section_idx];
+            section.header.virtual_address + section.header.virtual_size
+        };
+
+        let builder = crate::delay_import::DelayImportBuilder::new(is_64bit, base_rva);
+        let (data, _) = builder.build(&directory.dlls);
+        let required_size = data.len();
+
+        // Check if we can replace in-place
+        if let Some(ref dir) = existing_dir
+            && dir.is_present()
+            && dir.size as usize >= required_size
+        {
+            // For in-place, we need to rebuild with the existing RVA
+            let existing_builder =
+                crate::delay_import::DelayImportBuilder::new(is_64bit, dir.virtual_address);
+            let (existing_data, _) = existing_builder.build(&directory.dlls);
+            if self
+                .write_at_rva(dir.virtual_address, &existing_data)
+                .is_some()
+            {
+                self.set_data_directory(
+                    DataDirectoryType::DelayImport,
+                    dir.virtual_address,
+                    existing_data.len() as u32,
+                );
+                return Ok(dir.virtual_address);
+            }
+        }
+
+        // Append to section
+        self.sections[section_idx].append_data(&data);
+        self.set_data_directory(DataDirectoryType::DelayImport, base_rva, data.len() as u32);
+
+        Ok(base_rva)
     }
 
     /// Parse the resource directory (metadata only).
@@ -867,7 +1260,87 @@ impl PE {
     }
 
     /// Update resources: tries in-place replacement first, otherwise appends to target section.
+    ///
+    /// The directory must have been parsed with `resources_with_data()` so that
+    /// the resource data is available.
     pub fn update_resources(
+        &mut self,
+        directory: &crate::resource::ResourceDirectory,
+        target_section: Option<&str>,
+    ) -> Result<u32> {
+        use crate::data_dir::DataDirectoryType;
+
+        if directory.resources.is_empty() {
+            self.clear_data_directory(DataDirectoryType::Resource);
+            return Ok(0);
+        }
+
+        let builder =
+            crate::resource::ResourceBuilder::from_directory(directory).ok_or_else(|| {
+                crate::Error::generic("Resource data not available - use resources_with_data()")
+            })?;
+
+        let required_size = builder.calculate_size();
+
+        // Check if we can replace in-place
+        let existing_dir = self.data_directory(DataDirectoryType::Resource).cloned();
+        if let Some(ref dir) = existing_dir
+            && dir.is_present()
+            && dir.size as usize >= required_size
+        {
+            let (data, size) = builder.build(dir.virtual_address);
+            if self.write_at_rva(dir.virtual_address, &data).is_some() {
+                self.set_data_directory(DataDirectoryType::Resource, dir.virtual_address, size);
+                return Ok(dir.virtual_address);
+            }
+        }
+
+        // Find target section
+        let section_name: String = target_section
+            .map(|s| s.to_string())
+            .or_else(|| {
+                if let Some(ref dir) = existing_dir
+                    && dir.is_present()
+                    && let Some(section) = self.section_by_rva(dir.virtual_address)
+                {
+                    return Some(section.name().to_string());
+                }
+                None
+            })
+            .or_else(|| {
+                if self.section_by_name(".rsrc").is_some() {
+                    Some(".rsrc".to_string())
+                } else if self.section_by_name(".rdata").is_some() {
+                    Some(".rdata".to_string())
+                } else {
+                    self.sections.last().map(|s| s.name().to_string())
+                }
+            })
+            .unwrap_or_else(|| ".rsrc".to_string());
+
+        let section_idx = self.sections.iter().position(|s| s.name() == section_name);
+        let section_idx = match section_idx {
+            Some(idx) => idx,
+            None => return Err(crate::Error::invalid_section(section_name)),
+        };
+
+        let append_rva = {
+            let section = &self.sections[section_idx];
+            section.header.virtual_address + section.header.virtual_size
+        };
+
+        let (data, size) = builder.build(append_rva);
+        self.sections[section_idx].append_data(&data);
+        self.set_data_directory(DataDirectoryType::Resource, append_rva, size);
+
+        Ok(append_rva)
+    }
+
+    /// Update resources from a builder: for creating new resources from scratch.
+    ///
+    /// Use this when building new resources rather than modifying existing ones.
+    /// For modifying existing resources, use `update_resources()` with a parsed `ResourceDirectory`.
+    pub fn update_resources_from_builder(
         &mut self,
         builder: &crate::resource::ResourceBuilder,
         target_section: Option<&str>,

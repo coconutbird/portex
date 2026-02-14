@@ -41,8 +41,8 @@
 //! let icon_data = std::fs::read("icon.ico")?;
 //! builder.add_resource(ResourceType::Icon, 1, 0x0409, icon_data);
 //!
-//! // Update PE with new resources
-//! pe.update_resources(&builder, None)?;
+//! // Update PE with new resources (using builder for new resources)
+//! pe.update_resources_from_builder(&builder, None)?;
 //! pe.write_to_file("output.exe")?;
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
@@ -589,6 +589,27 @@ impl ResourceBuilder {
         Self {
             entries: Vec::new(),
         }
+    }
+
+    /// Create a builder from a parsed ResourceDirectory.
+    ///
+    /// The directory must have been parsed with `resources_with_data()` so that
+    /// the `Resource::data` field is populated.
+    ///
+    /// Returns `None` if any resource is missing its data.
+    pub fn from_directory(directory: &ResourceDirectory) -> Option<Self> {
+        let mut builder = Self::new();
+        for resource in &directory.resources {
+            let data = resource.data.as_ref()?.clone();
+            builder.add(ResourceEntry {
+                resource_type: resource.resource_type.clone(),
+                name: resource.name.clone(),
+                language: resource.language,
+                code_page: resource.code_page,
+                data,
+            });
+        }
+        Some(builder)
     }
 
     /// Add a resource entry.

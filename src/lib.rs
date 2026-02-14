@@ -46,10 +46,13 @@
 //! println!("Entry point: {:#x}", headers.entry_point());
 //! ```
 
+pub mod bound_import;
 pub mod checksum;
+pub mod clr;
 pub mod coff;
 pub mod data_dir;
 pub mod debug;
+pub mod delay_import;
 pub mod dos;
 pub mod error;
 pub mod exception;
@@ -64,12 +67,20 @@ pub mod reloc;
 pub mod resource;
 pub mod rich;
 pub mod section;
+pub mod security;
 pub mod tls;
 pub mod validation;
 
+pub use bound_import::{
+    BoundForwarderRef, BoundImportBuilder, BoundImportDescriptor, BoundImportDirectory,
+};
 pub use checksum::{calculate_checksum, checksum_field_offset, compute_pe_checksum};
+pub use clr::CliHeader;
 pub use data_dir::{DataDirectory, DataDirectoryType};
 pub use debug::{CodeViewRsds, DebugDirectory, DebugInfo, DebugType};
+pub use delay_import::{
+    DelayImportBuilder, DelayImportDirectory, DelayImportThunk, DelayLoadDescriptor, DelayLoadedDll,
+};
 pub use error::{Error, Result};
 pub use exception::{ExceptionDirectory, RuntimeFunction, UnwindCode, UnwindInfo, UnwindOpCode};
 pub use export::{
@@ -86,5 +97,8 @@ pub use resource::{
 };
 pub use rich::{RichEntry, RichHeader};
 pub use section::{Section, SectionHeader};
+pub use security::{
+    Certificate, CertificateRevision, CertificateType, SecurityBuilder, SecurityDirectory,
+};
 pub use tls::{TlsDirectory, TlsDirectory32, TlsDirectory64, TlsInfo};
 pub use validation::{ValidationCode, ValidationIssue, ValidationLevel, ValidationResult};

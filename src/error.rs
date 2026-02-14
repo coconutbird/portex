@@ -142,6 +142,8 @@ pub enum ErrorKind {
     InvalidRva(u32),
     /// Invalid UTF-8 string.
     InvalidUtf8,
+    /// Generic error with a message.
+    Generic(String),
 }
 
 impl Error {
@@ -241,6 +243,11 @@ impl Error {
     pub fn invalid_utf8() -> Self {
         Self::new(ErrorKind::InvalidUtf8)
     }
+
+    /// Create a Generic error with a message.
+    pub fn generic(msg: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Generic(msg.into()))
+    }
 }
 
 impl fmt::Display for ErrorKind {
@@ -268,6 +275,7 @@ impl fmt::Display for ErrorKind {
             }
             ErrorKind::InvalidRva(rva) => write!(f, "Invalid RVA: {rva:#x}"),
             ErrorKind::InvalidUtf8 => write!(f, "Invalid UTF-8 string"),
+            ErrorKind::Generic(msg) => write!(f, "{msg}"),
         }
     }
 }
