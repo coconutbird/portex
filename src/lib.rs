@@ -13,6 +13,25 @@
 //!   the entire file - ideal for remote process scenarios.
 //! - **Self-contained**: All PE structures defined from scratch, no Windows SDK.
 //!
+//! ## Architecture
+//!
+//! ### Parsing Patterns
+//!
+//! The library uses a consistent two-tier parsing pattern:
+//!
+//! 1. **Raw structures** use `parse(&[u8])` for parsing contiguous binary data:
+//!    - `ImportDescriptor::parse(&[u8])`, `TlsDirectory::parse(&[u8], is_64bit)`
+//!    - These parse a single fixed-size structure from a byte slice
+//!
+//! 2. **High-level tables** use `parse(rva, ..., read_fn)` for following RVA pointers:
+//!    - `ImportTable::parse(rva, is_64bit, read_fn)`, `ResourceDirectory::parse(rva, size, read_fn)`
+//!    - The `read_fn` closure enables reading from multiple locations (RVA resolution)
+//!
+//! ### Builder Pattern
+//!
+//! All builders (`ImportTableBuilder`, `ExportTableBuilder`, `ResourceBuilder`, etc.) use
+//! immutable `build(&self)` methods that return serialized bytes without mutating the builder.
+//!
 //! ## Example
 //!
 //! ```no_run
@@ -46,8 +65,10 @@ pub mod resource;
 pub mod rich;
 pub mod section;
 pub mod tls;
+pub mod validation;
 
 pub use checksum::{calculate_checksum, checksum_field_offset, compute_pe_checksum};
+pub use data_dir::{DataDirectory, DataDirectoryType};
 pub use debug::{CodeViewRsds, DebugDirectory, DebugInfo, DebugType};
 pub use error::{Error, Result};
 pub use exception::{ExceptionDirectory, RuntimeFunction, UnwindCode, UnwindInfo, UnwindOpCode};
@@ -66,3 +87,4 @@ pub use resource::{
 pub use rich::{RichEntry, RichHeader};
 pub use section::{Section, SectionHeader};
 pub use tls::{TlsDirectory, TlsDirectory32, TlsDirectory64, TlsInfo};
+pub use validation::{ValidationCode, ValidationIssue, ValidationLevel, ValidationResult};

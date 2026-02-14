@@ -161,16 +161,28 @@ impl PE {
         self.optional_header.image_base()
     }
 
-    /// Get a data directory entry.
-    pub fn data_directory(&self, index: usize) -> Option<&crate::data_dir::DataDirectory> {
+    /// Get a data directory entry by type.
+    pub fn data_directory(
+        &self,
+        dir_type: crate::data_dir::DataDirectoryType,
+    ) -> Option<&crate::data_dir::DataDirectory> {
+        self.optional_header
+            .data_directories()
+            .get(dir_type.as_index())
+    }
+
+    /// Get a data directory entry by index (for advanced use).
+    pub fn data_directory_by_index(&self, index: usize) -> Option<&crate::data_dir::DataDirectory> {
         self.optional_header.data_directories().get(index)
     }
 
     /// Parse the import table.
     pub fn imports(&self) -> Result<crate::import::ImportTable> {
-        use crate::data_dir::index::IMPORT;
+        use crate::data_dir::DataDirectoryType;
 
-        let dir = self.data_directory(IMPORT).filter(|d| d.is_present());
+        let dir = self
+            .data_directory(DataDirectoryType::Import)
+            .filter(|d| d.is_present());
         match dir {
             Some(d) => {
                 let read_fn = |rva: u32, len: usize| -> Option<Vec<u8>> {
@@ -184,9 +196,11 @@ impl PE {
 
     /// Parse the export table.
     pub fn exports(&self) -> Result<crate::export::ExportTable> {
-        use crate::data_dir::index::EXPORT;
+        use crate::data_dir::DataDirectoryType;
 
-        let dir = self.data_directory(EXPORT).filter(|d| d.is_present());
+        let dir = self
+            .data_directory(DataDirectoryType::Export)
+            .filter(|d| d.is_present());
         match dir {
             Some(d) => {
                 let read_fn = |rva: u32, len: usize| -> Option<Vec<u8>> {
@@ -200,9 +214,11 @@ impl PE {
 
     /// Parse the relocation table.
     pub fn relocations(&self) -> Result<crate::reloc::RelocationTable> {
-        use crate::data_dir::index::BASERELOC;
+        use crate::data_dir::DataDirectoryType;
 
-        let dir = self.data_directory(BASERELOC).filter(|d| d.is_present());
+        let dir = self
+            .data_directory(DataDirectoryType::BaseReloc)
+            .filter(|d| d.is_present());
         match dir {
             Some(d) => {
                 let read_fn = |rva: u32, len: usize| -> Option<Vec<u8>> {
@@ -214,8 +230,22 @@ impl PE {
         }
     }
 
-    /// Update a data directory entry.
-    pub fn set_data_directory(&mut self, index: usize, rva: u32, size: u32) {
+    /// Update a data directory entry by type.
+    pub fn set_data_directory(
+        &mut self,
+        dir_type: crate::data_dir::DataDirectoryType,
+        rva: u32,
+        size: u32,
+    ) {
+        let dirs = self.optional_header.data_directories_mut();
+        if let Some(dir) = dirs.get_mut(dir_type.as_index()) {
+            dir.virtual_address = rva;
+            dir.size = size;
+        }
+    }
+
+    /// Update a data directory entry by index (for advanced use).
+    pub fn set_data_directory_by_index(&mut self, index: usize, rva: u32, size: u32) {
         let dirs = self.optional_header.data_directories_mut();
         if let Some(dir) = dirs.get_mut(index) {
             dir.virtual_address = rva;
@@ -224,8 +254,8 @@ impl PE {
     }
 
     /// Clear a data directory entry.
-    pub fn clear_data_directory(&mut self, index: usize) {
-        self.set_data_directory(index, 0, 0);
+    pub fn clear_data_directory(&mut self, dir_type: crate::data_dir::DataDirectoryType) {
+        self.set_data_directory(dir_type, 0, 0);
     }
 
     /// Append data to a section and return the RVA where it was placed.
@@ -248,12 +278,12 @@ impl PE {
         imports: crate::import::ImportTable,
         target_section: Option<&str>,
     ) -> Result<u32> {
-        use crate::data_dir::index::{IAT, IMPORT};
+        use crate::data_dir::DataDirectoryType;
         use crate::import::ImportTableBuilder;
 
         if imports.is_empty() {
-            self.clear_data_directory(IMPORT);
-            self.clear_data_directory(IAT);
+            self.clear_data_directory(DataDirectoryType::Import);
+            self.clear_data_directory(DataDirectoryType::Iat);
             return Ok(0);
         }
 
@@ -262,7 +292,7 @@ impl PE {
         let required_size = builder_temp.calculate_size(&imports);
 
         // Check if we can replace in-place
-        let existing_dir = self.data_directory(IMPORT).cloned();
+        let existing_dir = self.data_directory(DataDirectoryType::Import).cloned();
         if let Some(ref dir) = existing_dir {
             if dir.is_present() && dir.size as usize >= required_size {
                 // Can replace in-place
@@ -272,8 +302,12 @@ impl PE {
                 if self.write_at_rva(dir.virtual_address, &data).is_some() {
                     let import_size = (imports.dlls.len() + 1) as u32
                         * crate::import::ImportDescriptor::SIZE as u32;
-                    self.set_data_directory(IMPORT, dir.virtual_address, import_size);
-                    self.set_data_directory(IAT, iat_rva, iat_size);
+                    self.set_data_directory(
+                        DataDirectoryType::Import,
+                        dir.virtual_address,
+                        import_size,
+                    );
+                    self.set_data_directory(DataDirectoryType::Iat, iat_rva, iat_size);
                     return Ok(dir.virtual_address);
                 }
             }
@@ -329,8 +363,8 @@ impl PE {
         // Update data directories
         let import_size =
             (imports.dlls.len() + 1) as u32 * crate::import::ImportDescriptor::SIZE as u32;
-        self.set_data_directory(IMPORT, append_rva, import_size);
-        self.set_data_directory(IAT, iat_rva, iat_size);
+        self.set_data_directory(DataDirectoryType::Import, append_rva, import_size);
+        self.set_data_directory(DataDirectoryType::Iat, iat_rva, iat_size);
 
         Ok(append_rva)
     }
@@ -343,11 +377,11 @@ impl PE {
         exports: crate::export::ExportTable,
         target_section: Option<&str>,
     ) -> Result<u32> {
-        use crate::data_dir::index::EXPORT;
+        use crate::data_dir::DataDirectoryType;
         use crate::export::ExportTableBuilder;
 
         if exports.is_empty() && exports.dll_name.is_empty() {
-            self.clear_data_directory(EXPORT);
+            self.clear_data_directory(DataDirectoryType::Export);
             return Ok(0);
         }
 
@@ -356,7 +390,7 @@ impl PE {
         let required_size = builder_temp.calculate_size(&exports);
 
         // Check if we can replace in-place
-        let existing_dir = self.data_directory(EXPORT).cloned();
+        let existing_dir = self.data_directory(DataDirectoryType::Export).cloned();
         if let Some(ref dir) = existing_dir {
             if dir.is_present() && dir.size as usize >= required_size {
                 // Can replace in-place
@@ -364,7 +398,11 @@ impl PE {
                 let (data, export_size) = builder.build(&exports);
 
                 if self.write_at_rva(dir.virtual_address, &data).is_some() {
-                    self.set_data_directory(EXPORT, dir.virtual_address, export_size);
+                    self.set_data_directory(
+                        DataDirectoryType::Export,
+                        dir.virtual_address,
+                        export_size,
+                    );
                     return Ok(dir.virtual_address);
                 }
             }
@@ -418,13 +456,13 @@ impl PE {
         self.sections[section_idx].append_data(&data);
 
         // Update data directory
-        self.set_data_directory(EXPORT, append_rva, export_size);
+        self.set_data_directory(DataDirectoryType::Export, append_rva, export_size);
 
         Ok(append_rva)
     }
 
-    /// Recalculate layout (section RVAs, file offsets, sizes).
-    /// Call this after modifying sections before writing.
+    /// Recalculate layout (section RVAs, file offsets, sizes) and update headers in place.
+    /// Call this after modifying sections if you want to persist layout changes to the PE struct.
     pub fn update_layout(&mut self) {
         let config = LayoutConfig::from_optional_header(&self.optional_header);
 
@@ -462,10 +500,17 @@ impl PE {
     }
 
     /// Build the PE file as a byte vector.
-    pub fn build(&mut self) -> Vec<u8> {
-        // Update layout first
-        self.update_layout();
+    /// This method does not mutate self - it computes layout on a clone.
+    pub fn build(&self) -> Vec<u8> {
+        // Clone and update layout
+        let mut pe = self.clone();
+        pe.update_layout();
+        pe.write_bytes()
+    }
 
+    /// Write the PE bytes without updating layout.
+    /// Use this if you've already called update_layout() and want to avoid redundant work.
+    fn write_bytes(&self) -> Vec<u8> {
         // Calculate total file size
         let mut file_size = self.optional_header.size_of_headers();
         for section in &self.sections {
@@ -529,7 +574,8 @@ impl PE {
     }
 
     /// Write the PE file to disk.
-    pub fn write_to_file<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
+    /// This method does not mutate self - it computes layout on a clone.
+    pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let bytes = self.build();
         let mut file = File::create(path)?;
         file.write_all(&bytes)?;
@@ -540,9 +586,11 @@ impl PE {
 
     /// Parse the TLS directory.
     pub fn tls(&self) -> Result<Option<crate::tls::TlsInfo>> {
-        use crate::data_dir::index::TLS;
+        use crate::data_dir::DataDirectoryType;
 
-        let dir = self.data_directory(TLS).filter(|d| d.is_present());
+        let dir = self
+            .data_directory(DataDirectoryType::Tls)
+            .filter(|d| d.is_present());
         match dir {
             Some(d) => {
                 let read_fn = |rva: u32, len: usize| -> Option<Vec<u8>> {
@@ -562,9 +610,11 @@ impl PE {
 
     /// Parse the debug directory.
     pub fn debug_info(&self) -> Result<Option<crate::debug::DebugInfo>> {
-        use crate::data_dir::index::DEBUG;
+        use crate::data_dir::DataDirectoryType;
 
-        let dir = self.data_directory(DEBUG).filter(|d| d.is_present());
+        let dir = self
+            .data_directory(DataDirectoryType::Debug)
+            .filter(|d| d.is_present());
         match dir {
             Some(d) => {
                 let read_fn = |rva: u32, len: usize| -> Option<Vec<u8>> {
@@ -587,9 +637,11 @@ impl PE {
 
     /// Parse the exception directory (.pdata).
     pub fn exception_directory(&self) -> Result<crate::exception::ExceptionDirectory> {
-        use crate::data_dir::index::EXCEPTION;
+        use crate::data_dir::DataDirectoryType;
 
-        let dir = self.data_directory(EXCEPTION).filter(|d| d.is_present());
+        let dir = self
+            .data_directory(DataDirectoryType::Exception)
+            .filter(|d| d.is_present());
         match dir {
             Some(d) => {
                 let read_fn = |rva: u32, len: usize| -> Option<Vec<u8>> {
@@ -603,9 +655,11 @@ impl PE {
 
     /// Parse the load config directory.
     pub fn load_config(&self) -> Result<Option<crate::loadconfig::LoadConfigDirectory>> {
-        use crate::data_dir::index::LOAD_CONFIG;
+        use crate::data_dir::DataDirectoryType;
 
-        let dir = self.data_directory(LOAD_CONFIG).filter(|d| d.is_present());
+        let dir = self
+            .data_directory(DataDirectoryType::LoadConfig)
+            .filter(|d| d.is_present());
         match dir {
             Some(d) => {
                 let data = self
@@ -620,11 +674,15 @@ impl PE {
         }
     }
 
-    /// Parse the resource directory.
+    /// Parse the resource directory (metadata only).
+    ///
+    /// To also load the actual resource data, use `resources_with_data()`.
     pub fn resources(&self) -> Result<crate::resource::ResourceDirectory> {
-        use crate::data_dir::index::RESOURCE;
+        use crate::data_dir::DataDirectoryType;
 
-        let dir = self.data_directory(RESOURCE).filter(|d| d.is_present());
+        let dir = self
+            .data_directory(DataDirectoryType::Resource)
+            .filter(|d| d.is_present());
         match dir {
             Some(d) => {
                 let read_fn = |rva: u32, len: usize| -> Option<Vec<u8>> {
@@ -636,16 +694,40 @@ impl PE {
         }
     }
 
+    /// Parse the resource directory including resource data.
+    ///
+    /// This is slower than `resources()` but loads each resource's data into the `Resource::data` field.
+    pub fn resources_with_data(&self) -> Result<crate::resource::ResourceDirectory> {
+        use crate::data_dir::DataDirectoryType;
+
+        let dir = self
+            .data_directory(DataDirectoryType::Resource)
+            .filter(|d| d.is_present());
+        match dir {
+            Some(d) => {
+                let read_fn = |rva: u32, len: usize| -> Option<Vec<u8>> {
+                    self.read_at_rva(rva, len).map(|s| s.to_vec())
+                };
+                crate::resource::ResourceDirectory::parse_with_data(
+                    d.virtual_address,
+                    d.size,
+                    read_fn,
+                )
+            }
+            None => Ok(crate::resource::ResourceDirectory::default()),
+        }
+    }
+
     /// Update relocations: tries in-place replacement first, otherwise appends to target section.
     pub fn update_relocations(
         &mut self,
-        mut relocs: crate::reloc::RelocationTable,
+        relocs: crate::reloc::RelocationTable,
         target_section: Option<&str>,
     ) -> Result<u32> {
-        use crate::data_dir::index::BASERELOC;
+        use crate::data_dir::DataDirectoryType;
 
         if relocs.blocks.is_empty() {
-            self.clear_data_directory(BASERELOC);
+            self.clear_data_directory(DataDirectoryType::BaseReloc);
             return Ok(0);
         }
 
@@ -653,11 +735,15 @@ impl PE {
         let required_size = data.len();
 
         // Check if we can replace in-place
-        let existing_dir = self.data_directory(BASERELOC).cloned();
+        let existing_dir = self.data_directory(DataDirectoryType::BaseReloc).cloned();
         if let Some(ref dir) = existing_dir {
             if dir.is_present() && dir.size as usize >= required_size {
                 if self.write_at_rva(dir.virtual_address, &data).is_some() {
-                    self.set_data_directory(BASERELOC, dir.virtual_address, data.len() as u32);
+                    self.set_data_directory(
+                        DataDirectoryType::BaseReloc,
+                        dir.virtual_address,
+                        data.len() as u32,
+                    );
                     return Ok(dir.virtual_address);
                 }
             }
@@ -699,7 +785,7 @@ impl PE {
         };
 
         self.sections[section_idx].append_data(&data);
-        self.set_data_directory(BASERELOC, append_rva, data.len() as u32);
+        self.set_data_directory(DataDirectoryType::BaseReloc, append_rva, data.len() as u32);
 
         Ok(append_rva)
     }
@@ -710,21 +796,21 @@ impl PE {
         builder: &crate::resource::ResourceBuilder,
         target_section: Option<&str>,
     ) -> Result<u32> {
-        use crate::data_dir::index::RESOURCE;
+        use crate::data_dir::DataDirectoryType;
 
         let required_size = builder.calculate_size();
         if required_size == 0 {
-            self.clear_data_directory(RESOURCE);
+            self.clear_data_directory(DataDirectoryType::Resource);
             return Ok(0);
         }
 
         // Check if we can replace in-place
-        let existing_dir = self.data_directory(RESOURCE).cloned();
+        let existing_dir = self.data_directory(DataDirectoryType::Resource).cloned();
         if let Some(ref dir) = existing_dir {
             if dir.is_present() && dir.size as usize >= required_size {
                 let (data, size) = builder.build(dir.virtual_address);
                 if self.write_at_rva(dir.virtual_address, &data).is_some() {
-                    self.set_data_directory(RESOURCE, dir.virtual_address, size);
+                    self.set_data_directory(DataDirectoryType::Resource, dir.virtual_address, size);
                     return Ok(dir.virtual_address);
                 }
             }
@@ -767,14 +853,14 @@ impl PE {
 
         let (data, size) = builder.build(append_rva);
         self.sections[section_idx].append_data(&data);
-        self.set_data_directory(RESOURCE, append_rva, size);
+        self.set_data_directory(DataDirectoryType::Resource, append_rva, size);
 
         Ok(append_rva)
     }
 
     /// Calculate and return the PE checksum.
     pub fn calculate_checksum(&self) -> u32 {
-        let data = self.clone().build();
+        let data = self.build();
         crate::checksum::compute_pe_checksum(&data).unwrap_or(0)
     }
 
@@ -791,6 +877,177 @@ impl PE {
     pub fn read_resource_data(&self, resource: &crate::resource::Resource) -> Option<Vec<u8>> {
         self.read_at_rva(resource.data_rva, resource.size as usize)
             .map(|s| s.to_vec())
+    }
+
+    // ========== Validation ==========
+
+    /// Validate PE structural integrity.
+    ///
+    /// Returns a collection of validation issues (errors and warnings).
+    /// An empty result means the PE passed all validation checks.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use portex::PE;
+    ///
+    /// let pe = PE::from_file("test.exe").unwrap();
+    /// let result = pe.validate();
+    ///
+    /// if result.has_errors() {
+    ///     for issue in result.errors() {
+    ///         eprintln!("Error: {}", issue);
+    ///     }
+    /// }
+    /// ```
+    pub fn validate(&self) -> crate::validation::ValidationResult {
+        use crate::validation::{ValidationCode, ValidationIssue, ValidationResult};
+
+        let mut result = ValidationResult::new();
+
+        // Check DOS signature
+        if self.dos_header.e_magic != 0x5A4D {
+            result.push(ValidationIssue::error(
+                ValidationCode::InvalidDosSignature,
+                "DOS signature is not 'MZ'",
+            ));
+        }
+
+        // Check sections exist
+        if self.sections.is_empty() {
+            result.push(ValidationIssue::warning(
+                ValidationCode::NoSections,
+                "PE has no sections",
+            ));
+        }
+
+        // Check file alignment
+        let file_align = self.optional_header.file_alignment();
+        if file_align == 0 || (file_align & (file_align - 1)) != 0 || file_align < 512 {
+            result.push(ValidationIssue::error(
+                ValidationCode::InvalidFileAlignment,
+                format!("Invalid file alignment: {:#x}", file_align),
+            ));
+        }
+
+        // Check section alignment
+        let section_align = self.optional_header.section_alignment();
+        if section_align == 0 || (section_align & (section_align - 1)) != 0 {
+            result.push(ValidationIssue::error(
+                ValidationCode::InvalidSectionAlignment,
+                format!("Invalid section alignment: {:#x}", section_align),
+            ));
+        }
+
+        // Check entry point is within a section (or is 0 for DLLs)
+        let entry = self.optional_header.address_of_entry_point();
+        if entry != 0 {
+            let entry_in_section = self.sections.iter().any(|s| s.header.contains_rva(entry));
+            if !entry_in_section {
+                result.push(ValidationIssue::warning(
+                    ValidationCode::EntryPointOutOfBounds,
+                    format!("Entry point {:#x} is not within any section", entry),
+                ));
+            }
+        }
+
+        // Check for overlapping sections (file offsets)
+        for (i, s1) in self.sections.iter().enumerate() {
+            if s1.header.pointer_to_raw_data == 0 || s1.header.size_of_raw_data == 0 {
+                continue;
+            }
+            let s1_end = s1.header.pointer_to_raw_data + s1.header.size_of_raw_data;
+            for s2 in self.sections.iter().skip(i + 1) {
+                if s2.header.pointer_to_raw_data == 0 || s2.header.size_of_raw_data == 0 {
+                    continue;
+                }
+                let s2_end = s2.header.pointer_to_raw_data + s2.header.size_of_raw_data;
+                // Check overlap
+                if s1.header.pointer_to_raw_data < s2_end && s2.header.pointer_to_raw_data < s1_end
+                {
+                    result.push(
+                        ValidationIssue::error(
+                            ValidationCode::OverlappingSections,
+                            format!(
+                                "Sections '{}' and '{}' overlap in file",
+                                s1.header.name_str(),
+                                s2.header.name_str()
+                            ),
+                        )
+                        .with_context(format!(
+                            "{}: {:#x}-{:#x}, {}: {:#x}-{:#x}",
+                            s1.header.name_str(),
+                            s1.header.pointer_to_raw_data,
+                            s1_end,
+                            s2.header.name_str(),
+                            s2.header.pointer_to_raw_data,
+                            s2_end
+                        )),
+                    );
+                }
+            }
+        }
+
+        // Check for overlapping sections (virtual addresses)
+        for (i, s1) in self.sections.iter().enumerate() {
+            if s1.header.virtual_size == 0 {
+                continue;
+            }
+            let s1_end = s1.header.virtual_address + s1.header.virtual_size;
+            for s2 in self.sections.iter().skip(i + 1) {
+                if s2.header.virtual_size == 0 {
+                    continue;
+                }
+                let s2_end = s2.header.virtual_address + s2.header.virtual_size;
+                if s1.header.virtual_address < s2_end && s2.header.virtual_address < s1_end {
+                    result.push(
+                        ValidationIssue::error(
+                            ValidationCode::OverlappingSections,
+                            format!(
+                                "Sections '{}' and '{}' overlap in virtual memory",
+                                s1.header.name_str(),
+                                s2.header.name_str()
+                            ),
+                        )
+                        .with_context(format!(
+                            "{}: {:#x}-{:#x}, {}: {:#x}-{:#x}",
+                            s1.header.name_str(),
+                            s1.header.virtual_address,
+                            s1_end,
+                            s2.header.name_str(),
+                            s2.header.virtual_address,
+                            s2_end
+                        )),
+                    );
+                }
+            }
+        }
+
+        // Check data directories point to valid sections
+        use crate::data_dir::DataDirectoryType;
+        for dir_type in DataDirectoryType::all() {
+            if let Some(dir) = self.data_directory(dir_type) {
+                if dir.is_present() {
+                    let rva = dir.virtual_address;
+                    let in_section = self.sections.iter().any(|s| s.header.contains_rva(rva));
+                    if !in_section {
+                        result.push(
+                            ValidationIssue::warning(
+                                ValidationCode::InvalidDataDirectoryRva,
+                                format!(
+                                    "Data directory {} RVA {:#x} is not within any section",
+                                    dir_type.name(),
+                                    rva
+                                ),
+                            )
+                            .with_context(dir_type.name().to_string()),
+                        );
+                    }
+                }
+            }
+        }
+
+        result
     }
 }
 

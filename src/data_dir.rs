@@ -3,24 +3,99 @@
 use crate::reader::Reader;
 use crate::{Error, Result};
 
-/// Data directory indices.
-pub mod index {
-    pub const EXPORT: usize = 0;
-    pub const IMPORT: usize = 1;
-    pub const RESOURCE: usize = 2;
-    pub const EXCEPTION: usize = 3;
-    pub const SECURITY: usize = 4;
-    pub const BASERELOC: usize = 5;
-    pub const DEBUG: usize = 6;
-    pub const ARCHITECTURE: usize = 7;
-    pub const GLOBALPTR: usize = 8;
-    pub const TLS: usize = 9;
-    pub const LOAD_CONFIG: usize = 10;
-    pub const BOUND_IMPORT: usize = 11;
-    pub const IAT: usize = 12;
-    pub const DELAY_IMPORT: usize = 13;
-    pub const CLR_RUNTIME: usize = 14;
-    pub const RESERVED: usize = 15;
+/// Data directory type - type-safe enum for data directory indices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(usize)]
+pub enum DataDirectoryType {
+    /// Export table (.edata)
+    Export = 0,
+    /// Import table (.idata)
+    Import = 1,
+    /// Resource table (.rsrc)
+    Resource = 2,
+    /// Exception table (.pdata)
+    Exception = 3,
+    /// Certificate/Security table
+    Security = 4,
+    /// Base relocation table (.reloc)
+    BaseReloc = 5,
+    /// Debug directory
+    Debug = 6,
+    /// Architecture-specific data
+    Architecture = 7,
+    /// Global pointer register value
+    GlobalPtr = 8,
+    /// Thread local storage (.tls)
+    Tls = 9,
+    /// Load configuration
+    LoadConfig = 10,
+    /// Bound import table
+    BoundImport = 11,
+    /// Import address table
+    Iat = 12,
+    /// Delay import descriptor
+    DelayImport = 13,
+    /// CLR runtime header
+    ClrRuntime = 14,
+    /// Reserved
+    Reserved = 15,
+}
+
+impl DataDirectoryType {
+    /// Get the index value.
+    pub const fn as_index(self) -> usize {
+        self as usize
+    }
+
+    /// Try to create from an index.
+    pub const fn from_index(index: usize) -> Option<Self> {
+        match index {
+            0 => Some(Self::Export),
+            1 => Some(Self::Import),
+            2 => Some(Self::Resource),
+            3 => Some(Self::Exception),
+            4 => Some(Self::Security),
+            5 => Some(Self::BaseReloc),
+            6 => Some(Self::Debug),
+            7 => Some(Self::Architecture),
+            8 => Some(Self::GlobalPtr),
+            9 => Some(Self::Tls),
+            10 => Some(Self::LoadConfig),
+            11 => Some(Self::BoundImport),
+            12 => Some(Self::Iat),
+            13 => Some(Self::DelayImport),
+            14 => Some(Self::ClrRuntime),
+            15 => Some(Self::Reserved),
+            _ => None,
+        }
+    }
+
+    /// Get the name of this directory type.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Export => "Export",
+            Self::Import => "Import",
+            Self::Resource => "Resource",
+            Self::Exception => "Exception",
+            Self::Security => "Security",
+            Self::BaseReloc => "BaseReloc",
+            Self::Debug => "Debug",
+            Self::Architecture => "Architecture",
+            Self::GlobalPtr => "GlobalPtr",
+            Self::Tls => "TLS",
+            Self::LoadConfig => "LoadConfig",
+            Self::BoundImport => "BoundImport",
+            Self::Iat => "IAT",
+            Self::DelayImport => "DelayImport",
+            Self::ClrRuntime => "CLR",
+            Self::Reserved => "Reserved",
+        }
+    }
+
+    /// Iterate over all directory types.
+    pub fn all() -> impl Iterator<Item = Self> {
+        (0..16).filter_map(Self::from_index)
+    }
 }
 
 /// Number of data directories in PE32+.
@@ -121,5 +196,25 @@ mod tests {
     fn test_data_directory_not_present() {
         let dir = DataDirectory::default();
         assert!(!dir.is_present());
+    }
+
+    #[test]
+    fn test_data_directory_type_roundtrip() {
+        for dir_type in DataDirectoryType::all() {
+            let index = dir_type.as_index();
+            let recovered = DataDirectoryType::from_index(index).unwrap();
+            assert_eq!(dir_type, recovered);
+            assert!(!dir_type.name().is_empty());
+        }
+    }
+
+    #[test]
+    fn test_data_directory_type_values() {
+        assert_eq!(DataDirectoryType::Export.as_index(), 0);
+        assert_eq!(DataDirectoryType::Import.as_index(), 1);
+        assert_eq!(DataDirectoryType::Resource.as_index(), 2);
+        assert_eq!(DataDirectoryType::BaseReloc.as_index(), 5);
+        assert_eq!(DataDirectoryType::Tls.as_index(), 9);
+        assert_eq!(DataDirectoryType::LoadConfig.as_index(), 10);
     }
 }

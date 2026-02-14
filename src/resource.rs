@@ -261,7 +261,7 @@ impl ResourceDataEntry {
     }
 }
 
-/// A parsed resource entry with data.
+/// A parsed resource entry with optional data.
 #[derive(Debug, Clone)]
 pub struct Resource {
     /// Resource type (level 1).
@@ -276,6 +276,8 @@ pub struct Resource {
     pub size: u32,
     /// Code page.
     pub code_page: u32,
+    /// The actual resource data (only populated if parsed with `parse_with_data`).
+    pub data: Option<Vec<u8>>,
 }
 
 impl Resource {
@@ -287,6 +289,11 @@ impl Resource {
     /// Get as standard resource type.
     pub fn get_type(&self) -> Option<ResourceType> {
         self.resource_type.as_resource_type()
+    }
+
+    /// Check if the resource data is loaded.
+    pub fn has_data(&self) -> bool {
+        self.data.is_some()
     }
 }
 
@@ -379,6 +386,7 @@ impl ResourceDirectory {
                         data_rva: data_entry.offset_to_data,
                         size: data_entry.size,
                         code_page: data_entry.code_page,
+                        data: None,
                     });
                 }
             }
@@ -413,6 +421,32 @@ impl ResourceDirectory {
             Ok(ResourceId::Name(name))
         } else {
             Ok(ResourceId::Id(entry.id()))
+        }
+    }
+
+    /// Parse resource directory from PE data, including resource data.
+    ///
+    /// Unlike `parse()`, this method also loads the actual resource data into each `Resource`.
+    pub fn parse_with_data<F>(rsrc_rva: u32, rsrc_size: u32, read_at_rva: F) -> Result<Self>
+    where
+        F: Fn(u32, usize) -> Option<Vec<u8>>,
+    {
+        let mut dir = Self::parse(rsrc_rva, rsrc_size, &read_at_rva)?;
+        dir.load_data(&read_at_rva);
+        Ok(dir)
+    }
+
+    /// Load the actual data for all resources that don't have it yet.
+    ///
+    /// This is useful if you parsed with `parse()` and later want to load specific resource data.
+    pub fn load_data<F>(&mut self, read_at_rva: F)
+    where
+        F: Fn(u32, usize) -> Option<Vec<u8>>,
+    {
+        for resource in &mut self.resources {
+            if resource.data.is_none() && resource.size > 0 {
+                resource.data = read_at_rva(resource.data_rva, resource.size as usize);
+            }
         }
     }
 

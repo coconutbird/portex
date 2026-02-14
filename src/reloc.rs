@@ -337,6 +337,7 @@ impl RelocationTable {
     }
 
     /// Sort blocks by page RVA and ensure each block is padded to 4-byte boundary.
+    /// Modifies self in place.
     pub fn normalize(&mut self) {
         // Sort blocks
         self.blocks.sort_by_key(|b| b.page_rva);
@@ -354,10 +355,17 @@ impl RelocationTable {
         }
     }
 
-    /// Build normalized relocation table bytes.
-    pub fn build(&mut self) -> Vec<u8> {
-        self.normalize();
-        self.to_bytes()
+    /// Create a normalized copy without modifying self.
+    pub fn normalized(&self) -> Self {
+        let mut copy = self.clone();
+        copy.normalize();
+        copy
+    }
+
+    /// Build relocation table bytes, normalizing a copy internally.
+    /// Does not modify self.
+    pub fn build(&self) -> Vec<u8> {
+        self.normalized().to_bytes()
     }
 }
 
