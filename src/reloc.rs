@@ -2,6 +2,53 @@
 //!
 //! This module provides types for reading and writing PE base relocation tables,
 //! used when the image is loaded at a different address than its preferred base.
+//!
+//! # Examples
+//!
+//! ## Listing relocations from a PE file
+//!
+//! ```no_run
+//! use portex::PE;
+//!
+//! let pe = PE::from_file("example.exe")?;
+//!
+//! let relocs = pe.relocations()?;
+//! for block in &relocs.blocks {
+//!     println!("Block at page RVA {:#x}", block.page_rva);
+//!     for entry in &block.entries {
+//!         println!("  Type: {:?}, Offset: {:#x}",
+//!             entry.reloc_type, entry.offset);
+//!     }
+//! }
+//! # Ok::<(), portex::Error>(())
+//! ```
+//!
+//! ## Adding relocations to a PE file
+//!
+//! ```no_run
+//! use portex::{PE, RelocationTable, RelocationBlock, RelocationEntry, RelocationType};
+//!
+//! let mut pe = PE::from_file("input.exe")?;
+//!
+//! // Build relocation table by creating blocks directly
+//! let table = RelocationTable {
+//!     blocks: vec![
+//!         RelocationBlock {
+//!             page_rva: 0x1000,
+//!             block_size: 12, // 8-byte header + 2 entries * 2 bytes
+//!             entries: vec![
+//!                 RelocationEntry { reloc_type: RelocationType::Dir64, offset: 0x100 },
+//!                 RelocationEntry { reloc_type: RelocationType::Dir64, offset: 0x200 },
+//!             ],
+//!         },
+//!     ],
+//! };
+//!
+//! // Update PE with relocations
+//! pe.update_relocations(table, None)?;
+//! pe.write_to_file("output.exe")?;
+//! # Ok::<(), portex::Error>(())
+//! ```
 
 use crate::{Error, Result};
 
@@ -100,10 +147,7 @@ impl RelocationBlock {
     /// Parse a relocation block from bytes.
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::HEADER_SIZE {
-            return Err(Error::BufferTooSmall {
-                expected: Self::HEADER_SIZE,
-                actual: data.len(),
-            });
+            return Err(Error::buffer_too_small(Self::HEADER_SIZE, data.len()));
         }
 
         let page_rva = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
@@ -113,10 +157,7 @@ impl RelocationBlock {
         let num_entries = (block_size as usize - Self::HEADER_SIZE) / 2;
 
         if data.len() < block_size as usize {
-            return Err(Error::BufferTooSmall {
-                expected: block_size as usize,
-                actual: data.len(),
-            });
+            return Err(Error::buffer_too_small(block_size as usize, data.len()));
         }
 
         let mut entries = Vec::with_capacity(num_entries);
@@ -177,7 +218,7 @@ impl RelocationTable {
         while offset < reloc_size {
             // Read block header
             let data = read_at_rva(reloc_rva + offset, reloc_size as usize - offset as usize)
-                .ok_or(Error::InvalidRva(reloc_rva + offset))?;
+                .ok_or(Error::invalid_rva(reloc_rva + offset))?;
 
             if data.len() < RelocationBlock::HEADER_SIZE {
                 break;

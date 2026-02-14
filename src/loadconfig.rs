@@ -69,10 +69,7 @@ impl LoadConfigDirectory32 {
 
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::MIN_SIZE {
-            return Err(Error::BufferTooSmall {
-                expected: Self::MIN_SIZE,
-                actual: data.len(),
-            });
+            return Err(Error::buffer_too_small(Self::MIN_SIZE, data.len()));
         }
 
         let size = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
@@ -213,10 +210,7 @@ impl LoadConfigDirectory64 {
 
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::MIN_SIZE {
-            return Err(Error::BufferTooSmall {
-                expected: Self::MIN_SIZE,
-                actual: data.len(),
-            });
+            return Err(Error::buffer_too_small(Self::MIN_SIZE, data.len()));
         }
 
         let mut config = Self {

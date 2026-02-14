@@ -1,4 +1,62 @@
 //! Main PE file structure and parsing.
+//!
+//! This module provides the main [`PE`] and [`PEHeaders`] types for reading,
+//! modifying, and writing Windows PE (Portable Executable) files.
+//!
+//! # Examples
+//!
+//! ## Loading and inspecting a PE file
+//!
+//! ```no_run
+//! use portex::PE;
+//!
+//! // Load from file
+//! let pe = PE::from_file("example.exe")?;
+//!
+//! // Check architecture
+//! println!("64-bit: {}", pe.is_64bit());
+//! println!("Entry point: {:#x}", pe.entry_point());
+//! println!("Image base: {:#x}", pe.image_base());
+//!
+//! // List sections
+//! for section in &pe.sections {
+//!     println!("Section: {} (RVA: {:#x}, size: {})",
+//!         section.name(),
+//!         section.header.virtual_address,
+//!         section.data.len());
+//! }
+//! # Ok::<(), portex::Error>(())
+//! ```
+//!
+//! ## Loading just headers (efficient for large files)
+//!
+//! ```no_run
+//! use portex::PEHeaders;
+//!
+//! // Just headers, no section data
+//! let headers = PEHeaders::from_file("large.exe")?;
+//! println!("Entry point: {:#x}", headers.entry_point());
+//! println!("Number of sections: {}", headers.section_headers.len());
+//! # Ok::<(), portex::Error>(())
+//! ```
+//!
+//! ## Modifying and writing a PE file
+//!
+//! ```no_run
+//! use portex::PE;
+//!
+//! let mut pe = PE::from_file("input.exe")?;
+//!
+//! // Modify entry point (access inner header directly)
+//! match &mut pe.optional_header {
+//!     portex::optional::OptionalHeader::Pe32(h) => h.address_of_entry_point = 0x1000,
+//!     portex::optional::OptionalHeader::Pe32Plus(h) => h.address_of_entry_point = 0x1000,
+//! }
+//!
+//! // Write to new file
+//! pe.write_to_file("output.exe")?;
+//! # Ok::<(), portex::Error>(())
+//! ```
 
 use crate::Result;
 use crate::coff::{CoffHeader, PE_SIGNATURE, verify_pe_signature};
@@ -293,23 +351,24 @@ impl PE {
 
         // Check if we can replace in-place
         let existing_dir = self.data_directory(DataDirectoryType::Import).cloned();
-        if let Some(ref dir) = existing_dir {
-            if dir.is_present() && dir.size as usize >= required_size {
-                // Can replace in-place
-                let builder = ImportTableBuilder::new(self.is_64bit(), dir.virtual_address);
-                let (data, iat_rva, iat_size) = builder.build(&imports);
+        if let Some(ref dir) = existing_dir
+            && dir.is_present()
+            && dir.size as usize >= required_size
+        {
+            // Can replace in-place
+            let builder = ImportTableBuilder::new(self.is_64bit(), dir.virtual_address);
+            let (data, iat_rva, iat_size) = builder.build(&imports);
 
-                if self.write_at_rva(dir.virtual_address, &data).is_some() {
-                    let import_size = (imports.dlls.len() + 1) as u32
-                        * crate::import::ImportDescriptor::SIZE as u32;
-                    self.set_data_directory(
-                        DataDirectoryType::Import,
-                        dir.virtual_address,
-                        import_size,
-                    );
-                    self.set_data_directory(DataDirectoryType::Iat, iat_rva, iat_size);
-                    return Ok(dir.virtual_address);
-                }
+            if self.write_at_rva(dir.virtual_address, &data).is_some() {
+                let import_size =
+                    (imports.dlls.len() + 1) as u32 * crate::import::ImportDescriptor::SIZE as u32;
+                self.set_data_directory(
+                    DataDirectoryType::Import,
+                    dir.virtual_address,
+                    import_size,
+                );
+                self.set_data_directory(DataDirectoryType::Iat, iat_rva, iat_size);
+                return Ok(dir.virtual_address);
             }
         }
 
@@ -322,12 +381,11 @@ impl PE {
             .map(|s| s.to_string())
             .or_else(|| {
                 // Try to find section containing existing import directory
-                if let Some(ref dir) = existing_dir {
-                    if dir.is_present() {
-                        if let Some(section) = self.section_by_rva(dir.virtual_address) {
-                            return Some(section.name().to_string());
-                        }
-                    }
+                if let Some(ref dir) = existing_dir
+                    && dir.is_present()
+                    && let Some(section) = self.section_by_rva(dir.virtual_address)
+                {
+                    return Some(section.name().to_string());
                 }
                 None
             })
@@ -344,7 +402,7 @@ impl PE {
         let section_idx = self.sections.iter().position(|s| s.name() == section_name);
         let section_idx = match section_idx {
             Some(idx) => idx,
-            None => return Err(crate::Error::InvalidSection(section_name)),
+            None => return Err(crate::Error::invalid_section(section_name)),
         };
 
         // Calculate RVA where data will be placed
@@ -391,20 +449,21 @@ impl PE {
 
         // Check if we can replace in-place
         let existing_dir = self.data_directory(DataDirectoryType::Export).cloned();
-        if let Some(ref dir) = existing_dir {
-            if dir.is_present() && dir.size as usize >= required_size {
-                // Can replace in-place
-                let builder = ExportTableBuilder::new(dir.virtual_address);
-                let (data, export_size) = builder.build(&exports);
+        if let Some(ref dir) = existing_dir
+            && dir.is_present()
+            && dir.size as usize >= required_size
+        {
+            // Can replace in-place
+            let builder = ExportTableBuilder::new(dir.virtual_address);
+            let (data, export_size) = builder.build(&exports);
 
-                if self.write_at_rva(dir.virtual_address, &data).is_some() {
-                    self.set_data_directory(
-                        DataDirectoryType::Export,
-                        dir.virtual_address,
-                        export_size,
-                    );
-                    return Ok(dir.virtual_address);
-                }
+            if self.write_at_rva(dir.virtual_address, &data).is_some() {
+                self.set_data_directory(
+                    DataDirectoryType::Export,
+                    dir.virtual_address,
+                    export_size,
+                );
+                return Ok(dir.virtual_address);
             }
         }
 
@@ -417,12 +476,11 @@ impl PE {
             .map(|s| s.to_string())
             .or_else(|| {
                 // Try to find section containing existing export directory
-                if let Some(ref dir) = existing_dir {
-                    if dir.is_present() {
-                        if let Some(section) = self.section_by_rva(dir.virtual_address) {
-                            return Some(section.name().to_string());
-                        }
-                    }
+                if let Some(ref dir) = existing_dir
+                    && dir.is_present()
+                    && let Some(section) = self.section_by_rva(dir.virtual_address)
+                {
+                    return Some(section.name().to_string());
                 }
                 None
             })
@@ -439,7 +497,7 @@ impl PE {
         let section_idx = self.sections.iter().position(|s| s.name() == section_name);
         let section_idx = match section_idx {
             Some(idx) => idx,
-            None => return Err(crate::Error::InvalidSection(section_name)),
+            None => return Err(crate::Error::invalid_section(section_name)),
         };
 
         // Calculate RVA where data will be placed
@@ -664,7 +722,7 @@ impl PE {
             Some(d) => {
                 let data = self
                     .read_at_rva(d.virtual_address, d.size as usize)
-                    .ok_or(crate::Error::InvalidRva(d.virtual_address))?;
+                    .ok_or(crate::Error::invalid_rva(d.virtual_address))?;
                 Ok(Some(crate::loadconfig::LoadConfigDirectory::parse(
                     data,
                     self.is_64bit(),
@@ -736,29 +794,28 @@ impl PE {
 
         // Check if we can replace in-place
         let existing_dir = self.data_directory(DataDirectoryType::BaseReloc).cloned();
-        if let Some(ref dir) = existing_dir {
-            if dir.is_present() && dir.size as usize >= required_size {
-                if self.write_at_rva(dir.virtual_address, &data).is_some() {
-                    self.set_data_directory(
-                        DataDirectoryType::BaseReloc,
-                        dir.virtual_address,
-                        data.len() as u32,
-                    );
-                    return Ok(dir.virtual_address);
-                }
-            }
+        if let Some(ref dir) = existing_dir
+            && dir.is_present()
+            && dir.size as usize >= required_size
+            && self.write_at_rva(dir.virtual_address, &data).is_some()
+        {
+            self.set_data_directory(
+                DataDirectoryType::BaseReloc,
+                dir.virtual_address,
+                data.len() as u32,
+            );
+            return Ok(dir.virtual_address);
         }
 
         // Find target section
         let section_name: String = target_section
             .map(|s| s.to_string())
             .or_else(|| {
-                if let Some(ref dir) = existing_dir {
-                    if dir.is_present() {
-                        if let Some(section) = self.section_by_rva(dir.virtual_address) {
-                            return Some(section.name().to_string());
-                        }
-                    }
+                if let Some(ref dir) = existing_dir
+                    && dir.is_present()
+                    && let Some(section) = self.section_by_rva(dir.virtual_address)
+                {
+                    return Some(section.name().to_string());
                 }
                 None
             })
@@ -776,7 +833,7 @@ impl PE {
         let section_idx = self.sections.iter().position(|s| s.name() == section_name);
         let section_idx = match section_idx {
             Some(idx) => idx,
-            None => return Err(crate::Error::InvalidSection(section_name)),
+            None => return Err(crate::Error::invalid_section(section_name)),
         };
 
         let append_rva = {
@@ -806,13 +863,14 @@ impl PE {
 
         // Check if we can replace in-place
         let existing_dir = self.data_directory(DataDirectoryType::Resource).cloned();
-        if let Some(ref dir) = existing_dir {
-            if dir.is_present() && dir.size as usize >= required_size {
-                let (data, size) = builder.build(dir.virtual_address);
-                if self.write_at_rva(dir.virtual_address, &data).is_some() {
-                    self.set_data_directory(DataDirectoryType::Resource, dir.virtual_address, size);
-                    return Ok(dir.virtual_address);
-                }
+        if let Some(ref dir) = existing_dir
+            && dir.is_present()
+            && dir.size as usize >= required_size
+        {
+            let (data, size) = builder.build(dir.virtual_address);
+            if self.write_at_rva(dir.virtual_address, &data).is_some() {
+                self.set_data_directory(DataDirectoryType::Resource, dir.virtual_address, size);
+                return Ok(dir.virtual_address);
             }
         }
 
@@ -820,12 +878,11 @@ impl PE {
         let section_name: String = target_section
             .map(|s| s.to_string())
             .or_else(|| {
-                if let Some(ref dir) = existing_dir {
-                    if dir.is_present() {
-                        if let Some(section) = self.section_by_rva(dir.virtual_address) {
-                            return Some(section.name().to_string());
-                        }
-                    }
+                if let Some(ref dir) = existing_dir
+                    && dir.is_present()
+                    && let Some(section) = self.section_by_rva(dir.virtual_address)
+                {
+                    return Some(section.name().to_string());
                 }
                 None
             })
@@ -843,7 +900,7 @@ impl PE {
         let section_idx = self.sections.iter().position(|s| s.name() == section_name);
         let section_idx = match section_idx {
             Some(idx) => idx,
-            None => return Err(crate::Error::InvalidSection(section_name)),
+            None => return Err(crate::Error::invalid_section(section_name)),
         };
 
         let append_rva = {
@@ -1026,23 +1083,23 @@ impl PE {
         // Check data directories point to valid sections
         use crate::data_dir::DataDirectoryType;
         for dir_type in DataDirectoryType::all() {
-            if let Some(dir) = self.data_directory(dir_type) {
-                if dir.is_present() {
-                    let rva = dir.virtual_address;
-                    let in_section = self.sections.iter().any(|s| s.header.contains_rva(rva));
-                    if !in_section {
-                        result.push(
-                            ValidationIssue::warning(
-                                ValidationCode::InvalidDataDirectoryRva,
-                                format!(
-                                    "Data directory {} RVA {:#x} is not within any section",
-                                    dir_type.name(),
-                                    rva
-                                ),
-                            )
-                            .with_context(dir_type.name().to_string()),
-                        );
-                    }
+            if let Some(dir) = self.data_directory(dir_type)
+                && dir.is_present()
+            {
+                let rva = dir.virtual_address;
+                let in_section = self.sections.iter().any(|s| s.header.contains_rva(rva));
+                if !in_section {
+                    result.push(
+                        ValidationIssue::warning(
+                            ValidationCode::InvalidDataDirectoryRva,
+                            format!(
+                                "Data directory {} RVA {:#x} is not within any section",
+                                dir_type.name(),
+                                rva
+                            ),
+                        )
+                        .with_context(dir_type.name().to_string()),
+                    );
                 }
             }
         }
@@ -1139,26 +1196,34 @@ impl PEHeaders {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Error;
 
     #[test]
     fn test_parse_invalid_dos_signature() {
         let data = vec![0u8; 256];
         let result = PE::parse(&data);
-        assert!(matches!(result, Err(Error::InvalidDosSignature)));
+        assert!(matches!(
+            result,
+            Err(ref e) if matches!(e.kind, crate::error::ErrorKind::InvalidDosSignature)
+        ));
     }
 
     #[test]
     fn test_parse_buffer_too_small() {
         let data = vec![0x4D, 0x5A]; // Just MZ
         let result = PE::parse(&data);
-        assert!(matches!(result, Err(Error::BufferTooSmall { .. })));
+        assert!(matches!(
+            result,
+            Err(ref e) if matches!(e.kind, crate::error::ErrorKind::BufferTooSmall { .. })
+        ));
     }
 
     #[test]
     fn test_headers_parse_invalid() {
         let data = vec![0u8; 256];
         let result = PEHeaders::from_slice(&data);
-        assert!(matches!(result, Err(Error::InvalidDosSignature)));
+        assert!(matches!(
+            result,
+            Err(ref e) if matches!(e.kind, crate::error::ErrorKind::InvalidDosSignature)
+        ));
     }
 }

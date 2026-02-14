@@ -2,6 +2,27 @@
 //!
 //! The TLS directory contains information about thread-local storage,
 //! including callbacks that are executed before the entry point.
+//!
+//! # Examples
+//!
+//! ## Reading TLS information from a PE file
+//!
+//! ```no_run
+//! use portex::PE;
+//!
+//! let pe = PE::from_file("example.exe")?;
+//!
+//! if let Some(tls) = pe.tls()? {
+//!     if let Some(ref dir) = tls.directory {
+//!         println!("TLS callbacks VA: {:#x}", dir.callbacks_va());
+//!     }
+//!     println!("Callback RVAs:");
+//!     for &callback in &tls.callback_rvas {
+//!         println!("  {:#x}", callback);
+//!     }
+//! }
+//! # Ok::<(), portex::Error>(())
+//! ```
 
 use crate::{Error, Result};
 
@@ -27,10 +48,7 @@ impl TlsDirectory32 {
 
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(Error::BufferTooSmall {
-                expected: Self::SIZE,
-                actual: data.len(),
-            });
+            return Err(Error::buffer_too_small(Self::SIZE, data.len()));
         }
 
         Ok(Self {
@@ -77,10 +95,7 @@ impl TlsDirectory64 {
 
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(Error::BufferTooSmall {
-                expected: Self::SIZE,
-                actual: data.len(),
-            });
+            return Err(Error::buffer_too_small(Self::SIZE, data.len()));
         }
 
         Ok(Self {
@@ -188,7 +203,7 @@ impl TlsInfo {
         } else {
             TlsDirectory32::SIZE
         };
-        let data = read_at_rva(tls_rva, dir_size).ok_or(Error::InvalidRva(tls_rva))?;
+        let data = read_at_rva(tls_rva, dir_size).ok_or(Error::invalid_rva(tls_rva))?;
         let directory = TlsDirectory::parse(&data, is_64bit)?;
 
         // Parse callbacks if present

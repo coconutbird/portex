@@ -118,10 +118,7 @@ impl DataDirectory {
     /// Parse a data directory from a byte slice.
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(Error::BufferTooSmall {
-                expected: Self::SIZE,
-                actual: data.len(),
-            });
+            return Err(Error::buffer_too_small(Self::SIZE, data.len()));
         }
 
         Ok(Self {
@@ -133,10 +130,7 @@ impl DataDirectory {
     /// Write the data directory to a byte buffer.
     pub fn write(&self, buf: &mut [u8]) -> Result<()> {
         if buf.len() < Self::SIZE {
-            return Err(Error::BufferTooSmall {
-                expected: Self::SIZE,
-                actual: buf.len(),
-            });
+            return Err(Error::buffer_too_small(Self::SIZE, buf.len()));
         }
 
         buf[0..4].copy_from_slice(&self.virtual_address.to_le_bytes());

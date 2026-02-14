@@ -61,15 +61,12 @@ impl DosHeader {
     /// Parse a DOS header from a byte slice.
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(Error::BufferTooSmall {
-                expected: Self::SIZE,
-                actual: data.len(),
-            });
+            return Err(Error::buffer_too_small(Self::SIZE, data.len()));
         }
 
         let e_magic = u16::from_le_bytes([data[0], data[1]]);
         if e_magic != DOS_SIGNATURE {
-            return Err(Error::InvalidDosSignature);
+            return Err(Error::invalid_dos_signature());
         }
 
         Ok(Self {
@@ -114,10 +111,7 @@ impl DosHeader {
     /// Write the DOS header to a byte buffer.
     pub fn write(&self, buf: &mut [u8]) -> Result<()> {
         if buf.len() < Self::SIZE {
-            return Err(Error::BufferTooSmall {
-                expected: Self::SIZE,
-                actual: buf.len(),
-            });
+            return Err(Error::buffer_too_small(Self::SIZE, buf.len()));
         }
 
         buf[0..2].copy_from_slice(&self.e_magic.to_le_bytes());
@@ -175,7 +169,10 @@ mod tests {
     fn test_dos_header_parse_too_small() {
         let data = [0u8; 32];
         let result = DosHeader::parse(&data);
-        assert!(matches!(result, Err(Error::BufferTooSmall { .. })));
+        assert!(matches!(
+            result,
+            Err(ref e) if matches!(e.kind, crate::error::ErrorKind::BufferTooSmall { .. })
+        ));
     }
 
     #[test]
@@ -184,7 +181,10 @@ mod tests {
         data[0] = 0x00;
         data[1] = 0x00;
         let result = DosHeader::parse(&data);
-        assert!(matches!(result, Err(Error::InvalidDosSignature)));
+        assert!(matches!(
+            result,
+            Err(ref e) if matches!(e.kind, crate::error::ErrorKind::InvalidDosSignature)
+        ));
     }
 
     #[test]

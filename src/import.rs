@@ -2,6 +2,55 @@
 //!
 //! This module provides types for reading and writing PE import tables,
 //! including import descriptors, thunks, and the overall import table.
+//!
+//! # Examples
+//!
+//! ## Listing imports from a PE file
+//!
+//! ```no_run
+//! use portex::PE;
+//!
+//! let pe = PE::from_file("example.exe")?;
+//!
+//! let imports = pe.imports()?;
+//! for dll in &imports.dlls {
+//!     println!("DLL: {}", dll.name);
+//!     for thunk in &dll.imports {
+//!         match thunk {
+//!             portex::ImportThunk::Name { hint, name } => {
+//!                 println!("  {} (hint: {})", name, hint);
+//!             }
+//!             portex::ImportThunk::Ordinal(ordinal) => {
+//!                 println!("  Ordinal #{}", ordinal);
+//!             }
+//!         }
+//!     }
+//! }
+//! # Ok::<(), portex::Error>(())
+//! ```
+//!
+//! ## Adding new imports to a PE file
+//!
+//! ```no_run
+//! use portex::{PE, ImportThunk, ImportTable};
+//!
+//! let mut pe = PE::from_file("input.exe")?;
+//!
+//! // Build new import table
+//! let mut imports = ImportTable::default();
+//! imports.add_dll("kernel32.dll", vec![
+//!     ImportThunk::Name { hint: 0, name: "LoadLibraryA".to_string() },
+//!     ImportThunk::Name { hint: 0, name: "GetProcAddress".to_string() },
+//! ]);
+//! imports.add_dll("user32.dll", vec![
+//!     ImportThunk::Name { hint: 0, name: "MessageBoxA".to_string() },
+//! ]);
+//!
+//! // Update PE with new imports
+//! pe.update_imports(imports, None)?;
+//! pe.write_to_file("output.exe")?;
+//! # Ok::<(), portex::Error>(())
+//! ```
 
 use crate::{Error, Result};
 
@@ -36,10 +85,7 @@ impl ImportDescriptor {
     /// Parse from bytes.
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(Error::BufferTooSmall {
-                expected: Self::SIZE,
-                actual: data.len(),
-            });
+            return Err(Error::buffer_too_small(Self::SIZE, data.len()));
         }
 
         Ok(Self {
@@ -54,10 +100,7 @@ impl ImportDescriptor {
     /// Write to a buffer.
     pub fn write(&self, buf: &mut [u8]) -> Result<()> {
         if buf.len() < Self::SIZE {
-            return Err(Error::BufferTooSmall {
-                expected: Self::SIZE,
-                actual: buf.len(),
-            });
+            return Err(Error::buffer_too_small(Self::SIZE, buf.len()));
         }
 
         buf[0..4].copy_from_slice(&self.original_first_thunk.to_le_bytes());
@@ -150,7 +193,7 @@ impl ImportTable {
         loop {
             // Read import descriptor
             let desc_data = read_at_rva(import_rva + offset, ImportDescriptor::SIZE)
-                .ok_or(Error::InvalidRva(import_rva + offset))?;
+                .ok_or(Error::invalid_rva(import_rva + offset))?;
             let descriptor = ImportDescriptor::parse(&desc_data)?;
 
             if descriptor.is_null() {
@@ -186,9 +229,9 @@ impl ImportTable {
         F: Fn(u32, usize) -> Option<Vec<u8>>,
     {
         // Read up to 256 bytes for a DLL name
-        let data = read_at_rva(rva, 256).ok_or(Error::InvalidRva(rva))?;
+        let data = read_at_rva(rva, 256).ok_or(Error::invalid_rva(rva))?;
         let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
-        String::from_utf8(data[..end].to_vec()).map_err(|_| Error::InvalidUtf8)
+        String::from_utf8(data[..end].to_vec()).map_err(|_| Error::invalid_utf8())
     }
 
     fn read_thunks<F>(read_at_rva: &F, thunk_rva: u32, is_64bit: bool) -> Result<Vec<ImportThunk>>
@@ -201,7 +244,7 @@ impl ImportTable {
 
         loop {
             let data = read_at_rva(thunk_rva + offset, thunk_size)
-                .ok_or(Error::InvalidRva(thunk_rva + offset))?;
+                .ok_or(Error::invalid_rva(thunk_rva + offset))?;
 
             let (is_ordinal, ordinal, hint_rva) = if is_64bit {
                 let value = u64::from_le_bytes([
@@ -231,7 +274,7 @@ impl ImportTable {
                 ImportThunk::Ordinal(ordinal)
             } else {
                 // Read hint (2 bytes) + name
-                let hint_data = read_at_rva(hint_rva, 2).ok_or(Error::InvalidRva(hint_rva))?;
+                let hint_data = read_at_rva(hint_rva, 2).ok_or(Error::invalid_rva(hint_rva))?;
                 let hint = u16::from_le_bytes([hint_data[0], hint_data[1]]);
                 let name = Self::read_string(read_at_rva, hint_rva + 2)?;
                 ImportThunk::Name { hint, name }

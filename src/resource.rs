@@ -2,6 +2,50 @@
 //!
 //! The resource directory contains embedded resources like icons, version info,
 //! manifests, dialogs, and other application data.
+//!
+//! # Examples
+//!
+//! ## Listing resources from a PE file
+//!
+//! ```no_run
+//! use portex::PE;
+//!
+//! let pe = PE::from_file("example.exe")?;
+//!
+//! let resources = pe.resources()?;
+//! for resource in &resources.resources {
+//!     println!("Type: {:?}, Name: {:?}, Language: {}, Size: {}",
+//!         resource.resource_type,
+//!         resource.name,
+//!         resource.language,
+//!         resource.size);
+//! }
+//! # Ok::<(), portex::Error>(())
+//! ```
+//!
+//! ## Adding resources to a PE file
+//!
+//! ```no_run
+//! use portex::{PE, ResourceBuilder, ResourceType};
+//!
+//! let mut pe = PE::from_file("input.exe")?;
+//!
+//! // Build resources
+//! let mut builder = ResourceBuilder::new();
+//!
+//! // Add a manifest (RT_MANIFEST = 24)
+//! let manifest = b"<?xml version=\"1.0\"?>...";
+//! builder.add_resource(ResourceType::Manifest, 1, 0x0409, manifest.to_vec());
+//!
+//! // Add an icon
+//! let icon_data = std::fs::read("icon.ico")?;
+//! builder.add_resource(ResourceType::Icon, 1, 0x0409, icon_data);
+//!
+//! // Update PE with new resources
+//! pe.update_resources(&builder, None)?;
+//! pe.write_to_file("output.exe")?;
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
 
 use crate::{Error, Result};
 
@@ -128,10 +172,7 @@ impl ResourceDirectoryHeader {
 
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(Error::BufferTooSmall {
-                expected: Self::SIZE,
-                actual: data.len(),
-            });
+            return Err(Error::buffer_too_small(Self::SIZE, data.len()));
         }
 
         Ok(Self {
@@ -174,10 +215,7 @@ impl ResourceDirectoryEntry {
 
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(Error::BufferTooSmall {
-                expected: Self::SIZE,
-                actual: data.len(),
-            });
+            return Err(Error::buffer_too_small(Self::SIZE, data.len()));
         }
 
         Ok(Self {
@@ -237,10 +275,7 @@ impl ResourceDataEntry {
 
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(Error::BufferTooSmall {
-                expected: Self::SIZE,
-                actual: data.len(),
-            });
+            return Err(Error::buffer_too_small(Self::SIZE, data.len()));
         }
 
         Ok(Self {
@@ -314,7 +349,7 @@ impl ResourceDirectory {
 
         // Read the root directory
         let root_data = read_at_rva(rsrc_rva, ResourceDirectoryHeader::SIZE)
-            .ok_or(Error::InvalidRva(rsrc_rva))?;
+            .ok_or(Error::invalid_rva(rsrc_rva))?;
         let root_header = ResourceDirectoryHeader::parse(&root_data)?;
 
         // Parse type entries (level 1)
@@ -323,7 +358,7 @@ impl ResourceDirectory {
                 + ResourceDirectoryHeader::SIZE as u32
                 + (i * ResourceDirectoryEntry::SIZE) as u32;
             let entry_data = read_at_rva(entry_offset, ResourceDirectoryEntry::SIZE)
-                .ok_or(Error::InvalidRva(entry_offset))?;
+                .ok_or(Error::invalid_rva(entry_offset))?;
             let type_entry = ResourceDirectoryEntry::parse(&entry_data)?;
 
             let type_id = Self::parse_resource_id(&type_entry, rsrc_rva, &read_at_rva)?;
@@ -335,7 +370,7 @@ impl ResourceDirectory {
             // Parse name entries (level 2)
             let name_dir_offset = rsrc_rva + type_entry.data_offset();
             let name_dir_data = read_at_rva(name_dir_offset, ResourceDirectoryHeader::SIZE)
-                .ok_or(Error::InvalidRva(name_dir_offset))?;
+                .ok_or(Error::invalid_rva(name_dir_offset))?;
             let name_header = ResourceDirectoryHeader::parse(&name_dir_data)?;
 
             for j in 0..name_header.total_entries() {
@@ -343,7 +378,7 @@ impl ResourceDirectory {
                     + ResourceDirectoryHeader::SIZE as u32
                     + (j * ResourceDirectoryEntry::SIZE) as u32;
                 let name_entry_data = read_at_rva(name_entry_offset, ResourceDirectoryEntry::SIZE)
-                    .ok_or(Error::InvalidRva(name_entry_offset))?;
+                    .ok_or(Error::invalid_rva(name_entry_offset))?;
                 let name_entry = ResourceDirectoryEntry::parse(&name_entry_data)?;
 
                 let name_id = Self::parse_resource_id(&name_entry, rsrc_rva, &read_at_rva)?;
@@ -355,7 +390,7 @@ impl ResourceDirectory {
                 // Parse language entries (level 3)
                 let lang_dir_offset = rsrc_rva + name_entry.data_offset();
                 let lang_dir_data = read_at_rva(lang_dir_offset, ResourceDirectoryHeader::SIZE)
-                    .ok_or(Error::InvalidRva(lang_dir_offset))?;
+                    .ok_or(Error::invalid_rva(lang_dir_offset))?;
                 let lang_header = ResourceDirectoryHeader::parse(&lang_dir_data)?;
 
                 for k in 0..lang_header.total_entries() {
@@ -364,7 +399,7 @@ impl ResourceDirectory {
                         + (k * ResourceDirectoryEntry::SIZE) as u32;
                     let lang_entry_data =
                         read_at_rva(lang_entry_offset, ResourceDirectoryEntry::SIZE)
-                            .ok_or(Error::InvalidRva(lang_entry_offset))?;
+                            .ok_or(Error::invalid_rva(lang_entry_offset))?;
                     let lang_entry = ResourceDirectoryEntry::parse(&lang_entry_data)?;
 
                     let language = lang_entry.id();
@@ -376,7 +411,7 @@ impl ResourceDirectory {
                     // Parse data entry
                     let data_entry_offset = rsrc_rva + lang_entry.data_offset();
                     let data_entry_data = read_at_rva(data_entry_offset, ResourceDataEntry::SIZE)
-                        .ok_or(Error::InvalidRva(data_entry_offset))?;
+                        .ok_or(Error::invalid_rva(data_entry_offset))?;
                     let data_entry = ResourceDataEntry::parse(&data_entry_data)?;
 
                     resources.push(Resource {
@@ -406,10 +441,10 @@ impl ResourceDirectory {
         if entry.is_named() {
             let name_offset = rsrc_rva + entry.name_offset();
             // Resource names are length-prefixed Unicode strings
-            let len_data = read_at_rva(name_offset, 2).ok_or(Error::InvalidRva(name_offset))?;
+            let len_data = read_at_rva(name_offset, 2).ok_or(Error::invalid_rva(name_offset))?;
             let len = u16::from_le_bytes([len_data[0], len_data[1]]) as usize;
             let name_data =
-                read_at_rva(name_offset + 2, len * 2).ok_or(Error::InvalidRva(name_offset + 2))?;
+                read_at_rva(name_offset + 2, len * 2).ok_or(Error::invalid_rva(name_offset + 2))?;
 
             // Convert UTF-16LE to String
             let mut chars = Vec::with_capacity(len);
@@ -790,7 +825,7 @@ impl ResourceBuilder {
         let mut data_entry_offsets: Vec<Vec<u32>> = Vec::new();
         let mut entry_info: Vec<Vec<EntryInfo>> = Vec::new();
 
-        let mut types: Vec<(ResourceId, Vec<(ResourceId, Vec<u16>)>)> = Vec::new();
+        let mut types: ResourceTree = Vec::new();
 
         for (type_key, names_map) in &grouped {
             type_dir_offsets.push(offset as u32);
@@ -910,9 +945,12 @@ struct EntryInfo {
     code_page: u32,
 }
 
+/// Type alias for the resource tree structure: Type -> Name -> Languages
+type ResourceTree = Vec<(ResourceId, Vec<(ResourceId, Vec<u16>)>)>;
+
 #[derive(Debug)]
 struct ResourceLayout {
-    types: Vec<(ResourceId, Vec<(ResourceId, Vec<u16>)>)>,
+    types: ResourceTree,
     type_dir_offsets: Vec<u32>,
     type_name_offsets: Vec<u32>,
     name_dir_offsets: Vec<Vec<u32>>,

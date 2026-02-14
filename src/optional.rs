@@ -149,10 +149,7 @@ impl OptionalHeader32 {
 
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::BASE_SIZE {
-            return Err(Error::BufferTooSmall {
-                expected: Self::BASE_SIZE,
-                actual: data.len(),
-            });
+            return Err(Error::buffer_too_small(Self::BASE_SIZE, data.len()));
         }
 
         let number_of_rva_and_sizes = u32::from_le_bytes([data[92], data[93], data[94], data[95]]);
@@ -160,10 +157,7 @@ impl OptionalHeader32 {
         let total_size = Self::BASE_SIZE + dirs_count * DataDirectory::SIZE;
 
         if data.len() < total_size {
-            return Err(Error::BufferTooSmall {
-                expected: total_size,
-                actual: data.len(),
-            });
+            return Err(Error::buffer_too_small(total_size, data.len()));
         }
 
         let mut data_directories = Vec::with_capacity(dirs_count);
@@ -217,10 +211,7 @@ impl OptionalHeader32 {
     pub fn write(&self, buf: &mut [u8]) -> Result<()> {
         let total_size = self.size();
         if buf.len() < total_size {
-            return Err(Error::BufferTooSmall {
-                expected: total_size,
-                actual: buf.len(),
-            });
+            return Err(Error::buffer_too_small(total_size, buf.len()));
         }
 
         buf[0..2].copy_from_slice(&self.magic.to_le_bytes());
@@ -277,10 +268,7 @@ impl OptionalHeader64 {
 
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::BASE_SIZE {
-            return Err(Error::BufferTooSmall {
-                expected: Self::BASE_SIZE,
-                actual: data.len(),
-            });
+            return Err(Error::buffer_too_small(Self::BASE_SIZE, data.len()));
         }
 
         let number_of_rva_and_sizes =
@@ -289,10 +277,7 @@ impl OptionalHeader64 {
         let total_size = Self::BASE_SIZE + dirs_count * DataDirectory::SIZE;
 
         if data.len() < total_size {
-            return Err(Error::BufferTooSmall {
-                expected: total_size,
-                actual: data.len(),
-            });
+            return Err(Error::buffer_too_small(total_size, data.len()));
         }
 
         let mut data_directories = Vec::with_capacity(dirs_count);
@@ -355,10 +340,7 @@ impl OptionalHeader64 {
     pub fn write(&self, buf: &mut [u8]) -> Result<()> {
         let total_size = self.size();
         if buf.len() < total_size {
-            return Err(Error::BufferTooSmall {
-                expected: total_size,
-                actual: buf.len(),
-            });
+            return Err(Error::buffer_too_small(total_size, buf.len()));
         }
 
         buf[0..2].copy_from_slice(&self.magic.to_le_bytes());
@@ -412,17 +394,14 @@ impl OptionalHeader64 {
 impl OptionalHeader {
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < 2 {
-            return Err(Error::BufferTooSmall {
-                expected: 2,
-                actual: data.len(),
-            });
+            return Err(Error::buffer_too_small(2, data.len()));
         }
 
         let magic = u16::from_le_bytes([data[0], data[1]]);
         match magic {
             PE32_MAGIC => Ok(Self::Pe32(OptionalHeader32::parse(data)?)),
             PE32PLUS_MAGIC => Ok(Self::Pe32Plus(OptionalHeader64::parse(data)?)),
-            _ => Err(Error::InvalidOptionalHeaderMagic(magic)),
+            _ => Err(Error::invalid_optional_header_magic(magic)),
         }
     }
 
@@ -481,7 +460,7 @@ impl OptionalHeader {
         let base_size = match magic {
             PE32_MAGIC => OptionalHeader32::BASE_SIZE,
             PE32PLUS_MAGIC => OptionalHeader64::BASE_SIZE,
-            _ => return Err(Error::InvalidOptionalHeaderMagic(magic)),
+            _ => return Err(Error::invalid_optional_header_magic(magic)),
         };
 
         // Read the base header to get number of data directories

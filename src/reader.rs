@@ -22,10 +22,7 @@ pub trait Reader {
     fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
         let n = self.read_at(offset, buf)?;
         if n < buf.len() {
-            return Err(Error::BufferTooSmall {
-                expected: buf.len(),
-                actual: n,
-            });
+            return Err(Error::buffer_too_small(buf.len(), n));
         }
         Ok(())
     }

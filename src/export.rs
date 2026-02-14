@@ -2,6 +2,51 @@
 //!
 //! This module provides types for reading and writing PE export tables,
 //! including the export directory and exported functions.
+//!
+//! # Examples
+//!
+//! ## Listing exports from a DLL
+//!
+//! ```no_run
+//! use portex::PE;
+//!
+//! let pe = PE::from_file("example.dll")?;
+//!
+//! let exports = pe.exports()?;
+//! println!("DLL name: {}", exports.dll_name);
+//! println!("Ordinal base: {}", exports.directory.base);
+//!
+//! for func in &exports.exports {
+//!     let name = func.name.as_deref().unwrap_or("<unnamed>");
+//!     let addr = match &func.address {
+//!         portex::ExportAddress::Rva(rva) => format!("{:#x}", rva),
+//!         portex::ExportAddress::Forwarder(s) => s.clone(),
+//!     };
+//!     println!("  {} (ordinal {}): {}", name, func.ordinal, addr);
+//! }
+//! # Ok::<(), portex::Error>(())
+//! ```
+//!
+//! ## Creating a DLL with exports
+//!
+//! ```no_run
+//! use portex::{PE, ExportTable};
+//!
+//! let mut pe = PE::from_file("input.dll")?;
+//!
+//! // Build export table
+//! let mut exports = ExportTable::default();
+//! exports.dll_name = "mylib.dll".to_string();
+//! exports.directory.base = 1;
+//! exports.add_export(Some("MyFunction1"), 0x1000);
+//! exports.add_export(Some("MyFunction2"), 0x2000);
+//! exports.add_export(None, 0x3000); // No name, just ordinal
+//!
+//! // Update PE with new exports
+//! pe.update_exports(exports, None)?;
+//! pe.write_to_file("output.dll")?;
+//! # Ok::<(), portex::Error>(())
+//! ```
 
 use crate::{Error, Result};
 
@@ -38,10 +83,7 @@ impl ExportDirectory {
     /// Parse from bytes.
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(Error::BufferTooSmall {
-                expected: Self::SIZE,
-                actual: data.len(),
-            });
+            return Err(Error::buffer_too_small(Self::SIZE, data.len()));
         }
 
         Ok(Self {
@@ -62,10 +104,7 @@ impl ExportDirectory {
     /// Write to a buffer.
     pub fn write(&self, buf: &mut [u8]) -> Result<()> {
         if buf.len() < Self::SIZE {
-            return Err(Error::BufferTooSmall {
-                expected: Self::SIZE,
-                actual: buf.len(),
-            });
+            return Err(Error::buffer_too_small(Self::SIZE, buf.len()));
         }
 
         buf[0..4].copy_from_slice(&self.characteristics.to_le_bytes());
@@ -133,7 +172,7 @@ impl ExportTable {
     {
         // Read export directory
         let dir_data =
-            read_at_rva(export_rva, ExportDirectory::SIZE).ok_or(Error::InvalidRva(export_rva))?;
+            read_at_rva(export_rva, ExportDirectory::SIZE).ok_or(Error::invalid_rva(export_rva))?;
         let directory = ExportDirectory::parse(&dir_data)?;
 
         // Read DLL name
@@ -153,9 +192,9 @@ impl ExportTable {
     where
         F: Fn(u32, usize) -> Option<Vec<u8>>,
     {
-        let data = read_at_rva(rva, 256).ok_or(Error::InvalidRva(rva))?;
+        let data = read_at_rva(rva, 256).ok_or(Error::invalid_rva(rva))?;
         let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
-        String::from_utf8(data[..end].to_vec()).map_err(|_| Error::InvalidUtf8)
+        String::from_utf8(data[..end].to_vec()).map_err(|_| Error::invalid_utf8())
     }
 
     fn read_exports<F>(
@@ -173,7 +212,7 @@ impl ExportTable {
         // Read function addresses (EAT)
         for i in 0..dir.number_of_functions {
             let addr_rva = dir.address_of_functions + i * 4;
-            let addr_data = read_at_rva(addr_rva, 4).ok_or(Error::InvalidRva(addr_rva))?;
+            let addr_data = read_at_rva(addr_rva, 4).ok_or(Error::invalid_rva(addr_rva))?;
             let func_rva =
                 u32::from_le_bytes([addr_data[0], addr_data[1], addr_data[2], addr_data[3]]);
 
@@ -203,7 +242,7 @@ impl ExportTable {
             // Read name RVA
             let name_ptr_rva = dir.address_of_names + i * 4;
             let name_ptr_data =
-                read_at_rva(name_ptr_rva, 4).ok_or(Error::InvalidRva(name_ptr_rva))?;
+                read_at_rva(name_ptr_rva, 4).ok_or(Error::invalid_rva(name_ptr_rva))?;
             let name_rva = u32::from_le_bytes([
                 name_ptr_data[0],
                 name_ptr_data[1],
@@ -213,7 +252,7 @@ impl ExportTable {
 
             // Read ordinal index
             let ord_rva = dir.address_of_name_ordinals + i * 2;
-            let ord_data = read_at_rva(ord_rva, 2).ok_or(Error::InvalidRva(ord_rva))?;
+            let ord_data = read_at_rva(ord_rva, 2).ok_or(Error::invalid_rva(ord_rva))?;
             let ord_index = u16::from_le_bytes([ord_data[0], ord_data[1]]) as usize;
 
             // Read name

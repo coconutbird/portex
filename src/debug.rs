@@ -1,6 +1,29 @@
 //! Debug directory parsing and building.
 //!
 //! The debug directory contains debugging information such as PDB paths.
+//!
+//! # Examples
+//!
+//! ## Reading debug information from a PE file
+//!
+//! ```no_run
+//! use portex::PE;
+//!
+//! let pe = PE::from_file("example.exe")?;
+//!
+//! if let Some(debug_info) = pe.debug_info()? {
+//!     for dir in &debug_info.directories {
+//!         println!("Debug type: {:?}", dir.debug_type);
+//!         println!("  Data RVA: {:#x}", dir.address_of_raw_data);
+//!     }
+//!     if let Some(ref codeview) = debug_info.codeview {
+//!         println!("  PDB path: {}", codeview.pdb_path);
+//!         println!("  GUID: {:?}", codeview.guid);
+//!         println!("  Age: {}", codeview.age);
+//!     }
+//! }
+//! # Ok::<(), portex::Error>(())
+//! ```
 
 use crate::{Error, Result};
 
@@ -79,10 +102,7 @@ impl DebugDirectory {
 
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(Error::BufferTooSmall {
-                expected: Self::SIZE,
-                actual: data.len(),
-            });
+            return Err(Error::buffer_too_small(Self::SIZE, data.len()));
         }
 
         Ok(Self {
@@ -139,16 +159,13 @@ impl CodeViewRsds {
 
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::MIN_SIZE {
-            return Err(Error::BufferTooSmall {
-                expected: Self::MIN_SIZE,
-                actual: data.len(),
-            });
+            return Err(Error::buffer_too_small(Self::MIN_SIZE, data.len()));
         }
 
         // Verify signature
         let sig = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
         if sig != CV_SIGNATURE_RSDS {
-            return Err(Error::InvalidDataDirectory("Invalid RSDS signature".into()));
+            return Err(Error::invalid_data_directory("Invalid RSDS signature"));
         }
 
         let mut guid = [0u8; 16];
@@ -162,7 +179,7 @@ impl CodeViewRsds {
             .position(|&b| b == 0)
             .unwrap_or(path_data.len());
         let pdb_path =
-            String::from_utf8(path_data[..end].to_vec()).map_err(|_| Error::InvalidUtf8)?;
+            String::from_utf8(path_data[..end].to_vec()).map_err(|_| Error::invalid_utf8())?;
 
         Ok(Self {
             guid,
@@ -223,24 +240,22 @@ impl DebugInfo {
         for i in 0..num_entries {
             let offset = (i * DebugDirectory::SIZE) as u32;
             let data = read_at_rva(debug_rva + offset, DebugDirectory::SIZE)
-                .ok_or(Error::InvalidRva(debug_rva + offset))?;
+                .ok_or(Error::invalid_rva(debug_rva + offset))?;
 
             let dir = DebugDirectory::parse(&data)?;
 
             // Parse CodeView if present
-            if dir.get_type() == DebugType::CodeView && dir.size_of_data > 0 {
-                if let Some(cv_data) =
+            if dir.get_type() == DebugType::CodeView
+                && dir.size_of_data > 0
+                && let Some(cv_data) =
                     read_at_rva(dir.address_of_raw_data, dir.size_of_data as usize)
+                && cv_data.len() >= 4
+            {
+                let sig = u32::from_le_bytes([cv_data[0], cv_data[1], cv_data[2], cv_data[3]]);
+                if sig == CV_SIGNATURE_RSDS
+                    && let Ok(rsds) = CodeViewRsds::parse(&cv_data)
                 {
-                    if cv_data.len() >= 4 {
-                        let sig =
-                            u32::from_le_bytes([cv_data[0], cv_data[1], cv_data[2], cv_data[3]]);
-                        if sig == CV_SIGNATURE_RSDS {
-                            if let Ok(rsds) = CodeViewRsds::parse(&cv_data) {
-                                codeview = Some(rsds);
-                            }
-                        }
-                    }
+                    codeview = Some(rsds);
                 }
             }
 

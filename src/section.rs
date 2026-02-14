@@ -106,10 +106,7 @@ impl SectionHeader {
     /// Parse a section header from bytes.
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(Error::BufferTooSmall {
-                expected: Self::SIZE,
-                actual: data.len(),
-            });
+            return Err(Error::buffer_too_small(Self::SIZE, data.len()));
         }
 
         let mut name = [0u8; 8];
@@ -132,10 +129,7 @@ impl SectionHeader {
     /// Write the section header to a buffer.
     pub fn write(&self, buf: &mut [u8]) -> Result<()> {
         if buf.len() < Self::SIZE {
-            return Err(Error::BufferTooSmall {
-                expected: Self::SIZE,
-                actual: buf.len(),
-            });
+            return Err(Error::buffer_too_small(Self::SIZE, buf.len()));
         }
 
         buf[0..8].copy_from_slice(&self.name);

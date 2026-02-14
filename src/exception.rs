@@ -23,10 +23,7 @@ impl RuntimeFunction {
     /// Parse from bytes.
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(Error::BufferTooSmall {
-                expected: Self::SIZE,
-                actual: data.len(),
-            });
+            return Err(Error::buffer_too_small(Self::SIZE, data.len()));
         }
 
         Ok(Self {
@@ -187,10 +184,7 @@ impl UnwindInfo {
     /// Parse from bytes at an RVA.
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::MIN_SIZE {
-            return Err(Error::BufferTooSmall {
-                expected: Self::MIN_SIZE,
-                actual: data.len(),
-            });
+            return Err(Error::buffer_too_small(Self::MIN_SIZE, data.len()));
         }
 
         let version_flags = data[0];
@@ -201,10 +195,10 @@ impl UnwindInfo {
         // Parse unwind codes (2 bytes each)
         let codes_size = count_of_codes as usize * 2;
         if data.len() < Self::MIN_SIZE + codes_size {
-            return Err(Error::BufferTooSmall {
-                expected: Self::MIN_SIZE + codes_size,
-                actual: data.len(),
-            });
+            return Err(Error::buffer_too_small(
+                Self::MIN_SIZE + codes_size,
+                data.len(),
+            ));
         }
 
         let mut unwind_codes = Vec::with_capacity(count_of_codes as usize);
@@ -300,7 +294,7 @@ impl ExceptionDirectory {
         for i in 0..num_entries {
             let offset = (i * RuntimeFunction::SIZE) as u32;
             let data = read_at_rva(pdata_rva + offset, RuntimeFunction::SIZE)
-                .ok_or(Error::InvalidRva(pdata_rva + offset))?;
+                .ok_or(Error::invalid_rva(pdata_rva + offset))?;
 
             let func = RuntimeFunction::parse(&data)?;
             // Skip null entries

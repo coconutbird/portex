@@ -112,10 +112,7 @@ impl CoffHeader {
     /// Parse a COFF header from a byte slice.
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(Error::BufferTooSmall {
-                expected: Self::SIZE,
-                actual: data.len(),
-            });
+            return Err(Error::buffer_too_small(Self::SIZE, data.len()));
         }
 
         Ok(Self {
@@ -132,10 +129,7 @@ impl CoffHeader {
     /// Write the COFF header to a byte buffer.
     pub fn write(&self, buf: &mut [u8]) -> Result<()> {
         if buf.len() < Self::SIZE {
-            return Err(Error::BufferTooSmall {
-                expected: Self::SIZE,
-                actual: buf.len(),
-            });
+            return Err(Error::buffer_too_small(Self::SIZE, buf.len()));
         }
 
         buf[0..2].copy_from_slice(&self.machine.to_le_bytes());
@@ -183,7 +177,7 @@ impl CoffHeader {
 pub fn verify_pe_signature<R: Reader>(reader: &R, offset: u64) -> Result<()> {
     let sig = reader.read_u32_at(offset)?;
     if sig != PE_SIGNATURE {
-        return Err(Error::InvalidPeSignature);
+        return Err(Error::invalid_pe_signature());
     }
     Ok(())
 }

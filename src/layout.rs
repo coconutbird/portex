@@ -112,9 +112,7 @@ pub fn calculate_size_of_image(sections: &[Section], config: &LayoutConfig) -> u
     }
 
     let last = &sections[sections.len() - 1];
-    let end_rva =
-        last.header.virtual_address + config.align_section(last.header.virtual_size.max(1));
-    end_rva
+    last.header.virtual_address + config.align_section(last.header.virtual_size.max(1))
 }
 
 #[cfg(test)]
