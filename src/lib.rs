@@ -104,5 +104,5 @@ pub use section::{Section, SectionHeader};
 pub use security::{
     Certificate, CertificateRevision, CertificateType, SecurityBuilder, SecurityDirectory,
 };
-pub use tls::{TlsDirectory, TlsDirectory32, TlsDirectory64, TlsInfo};
+pub use tls::{TlsBuilder, TlsDirectory, TlsDirectory32, TlsDirectory64, TlsInfo};
 pub use validation::{ValidationCode, ValidationIssue, ValidationLevel, ValidationResult};

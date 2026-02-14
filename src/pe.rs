@@ -764,6 +764,59 @@ impl PE {
         }
     }
 
+    /// Update the TLS directory.
+    ///
+    /// Creates or replaces the TLS directory with new data.
+    /// If target_section is None, uses ".rdata" or the last section.
+    ///
+    /// # Arguments
+    /// * `tls_info` - The TLS information to write
+    /// * `target_section` - Optional section to place the TLS data
+    ///
+    /// Returns the RVA where the TLS directory was written.
+    pub fn update_tls(
+        &mut self,
+        tls_info: &crate::tls::TlsInfo,
+        target_section: Option<&str>,
+    ) -> Result<u32> {
+        use crate::data_dir::DataDirectoryType;
+        use crate::tls::TlsBuilder;
+
+        // Find target section
+        let section_name: String = target_section
+            .map(|s| s.to_string())
+            .or_else(|| {
+                if self.section_by_name(".rdata").is_some() {
+                    Some(".rdata".to_string())
+                } else {
+                    self.sections.last().map(|s| s.name().to_string())
+                }
+            })
+            .unwrap_or_else(|| ".rdata".to_string());
+
+        let section_idx = self.sections.iter().position(|s| s.name() == section_name);
+        let section_idx = match section_idx {
+            Some(idx) => idx,
+            None => return Err(crate::Error::invalid_section(&section_name)),
+        };
+
+        // Calculate append RVA
+        let section = &self.sections[section_idx];
+        let append_rva = section.header.virtual_address + section.header.virtual_size;
+
+        // Build TLS data with correct RVA
+        let builder = TlsBuilder::new(append_rva, self.image_base(), self.is_64bit());
+        let (data, dir_size) = builder.build_from_info(tls_info);
+
+        // Append data to section
+        self.sections[section_idx].append_data(&data);
+
+        self.update_layout();
+        self.set_data_directory(DataDirectoryType::Tls, append_rva, dir_size);
+
+        Ok(append_rva)
+    }
+
     /// Parse the debug directory.
     pub fn debug_info(&self) -> Result<Option<crate::debug::DebugInfo>> {
         use crate::data_dir::DataDirectoryType;

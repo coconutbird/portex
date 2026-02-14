@@ -259,6 +259,174 @@ impl TlsInfo {
     }
 }
 
+/// Builder for TLS directories.
+///
+/// TLS directories contain thread-local storage initialization data and callbacks.
+/// The callbacks are function pointers called before the entry point.
+///
+/// # Example
+///
+/// ```
+/// use portex::tls::TlsBuilder;
+///
+/// // Create a TLS builder for 64-bit PE
+/// let builder = TlsBuilder::new(0x3000, 0x140000000, true);
+///
+/// // Build with TLS data region and no callbacks
+/// let (data, dir_size) = builder.build(0x1000, 0x1100, &[]);
+/// assert!(dir_size > 0);
+/// ```
+#[derive(Debug, Clone)]
+pub struct TlsBuilder {
+    /// Base RVA where the TLS section will be placed.
+    base_rva: u32,
+    /// Image base address (needed to convert RVAs to VAs).
+    image_base: u64,
+    /// Whether this is a 64-bit PE.
+    is_64bit: bool,
+}
+
+impl TlsBuilder {
+    /// Create a new TLS builder.
+    ///
+    /// # Arguments
+    /// * `base_rva` - RVA where the TLS data will be placed
+    /// * `image_base` - Image base address for VA calculations
+    /// * `is_64bit` - Whether the target PE is 64-bit
+    pub fn new(base_rva: u32, image_base: u64, is_64bit: bool) -> Self {
+        Self {
+            base_rva,
+            image_base,
+            is_64bit,
+        }
+    }
+
+    /// Build the TLS directory data.
+    ///
+    /// # Arguments
+    /// * `raw_data_start_rva` - RVA of the TLS raw data start
+    /// * `raw_data_end_rva` - RVA of the TLS raw data end
+    /// * `callback_rvas` - List of callback function RVAs
+    ///
+    /// Returns (data, directory_size) where:
+    /// - `data` is the raw bytes to write to the section
+    /// - `directory_size` is the size of the TLS directory (for data directory)
+    pub fn build(
+        &self,
+        raw_data_start_rva: u32,
+        raw_data_end_rva: u32,
+        callback_rvas: &[u64],
+    ) -> (Vec<u8>, u32) {
+        let ptr_size = if self.is_64bit { 8 } else { 4 };
+        let dir_size = if self.is_64bit {
+            TlsDirectory64::SIZE
+        } else {
+            TlsDirectory32::SIZE
+        };
+
+        // Layout:
+        // [TlsDirectory (24 or 40 bytes)]
+        // [TLS Index (4 bytes)]
+        // [Callbacks array (ptr_size * (callback_rvas.len() + 1))] - null terminated
+
+        let index_offset = dir_size;
+        let callbacks_offset = index_offset + 4; // TLS index is always 4 bytes
+        let callbacks_size = ptr_size * (callback_rvas.len() + 1); // +1 for null terminator
+        let total_size = callbacks_offset + callbacks_size;
+
+        let mut data = Vec::with_capacity(total_size);
+
+        // Convert RVAs to VAs
+        let raw_data_start_va = self.image_base + raw_data_start_rva as u64;
+        let raw_data_end_va = self.image_base + raw_data_end_rva as u64;
+        let index_va = self.image_base + self.base_rva as u64 + index_offset as u64;
+        let callbacks_va = if callback_rvas.is_empty() {
+            0 // No callbacks
+        } else {
+            self.image_base + self.base_rva as u64 + callbacks_offset as u64
+        };
+
+        // Write directory
+        if self.is_64bit {
+            let dir = TlsDirectory64 {
+                start_address_of_raw_data: raw_data_start_va,
+                end_address_of_raw_data: raw_data_end_va,
+                address_of_index: index_va,
+                address_of_callbacks: callbacks_va,
+                size_of_zero_fill: 0,
+                characteristics: 0,
+            };
+            data.extend_from_slice(&dir.to_bytes());
+        } else {
+            let dir = TlsDirectory32 {
+                start_address_of_raw_data: raw_data_start_va as u32,
+                end_address_of_raw_data: raw_data_end_va as u32,
+                address_of_index: index_va as u32,
+                address_of_callbacks: callbacks_va as u32,
+                size_of_zero_fill: 0,
+                characteristics: 0,
+            };
+            data.extend_from_slice(&dir.to_bytes());
+        }
+
+        // Write TLS index (initialized to 0)
+        data.extend_from_slice(&0u32.to_le_bytes());
+
+        // Write callbacks array
+        for &callback_rva in callback_rvas {
+            let callback_va = self.image_base + callback_rva;
+            if self.is_64bit {
+                data.extend_from_slice(&callback_va.to_le_bytes());
+            } else {
+                data.extend_from_slice(&(callback_va as u32).to_le_bytes());
+            }
+        }
+
+        // Null terminator for callbacks
+        if self.is_64bit {
+            data.extend_from_slice(&0u64.to_le_bytes());
+        } else {
+            data.extend_from_slice(&0u32.to_le_bytes());
+        }
+
+        (data, dir_size as u32)
+    }
+
+    /// Build from an existing TlsInfo structure.
+    ///
+    /// This rebuilds the TLS directory from parsed info.
+    pub fn build_from_info(&self, tls_info: &TlsInfo) -> (Vec<u8>, u32) {
+        let (raw_start, raw_end) = match &tls_info.directory {
+            Some(TlsDirectory::Tls32(dir)) => {
+                let start = (dir.start_address_of_raw_data as u64)
+                    .saturating_sub(self.image_base) as u32;
+                let end = (dir.end_address_of_raw_data as u64)
+                    .saturating_sub(self.image_base) as u32;
+                (start, end)
+            }
+            Some(TlsDirectory::Tls64(dir)) => {
+                let start = dir.start_address_of_raw_data.saturating_sub(self.image_base) as u32;
+                let end = dir.end_address_of_raw_data.saturating_sub(self.image_base) as u32;
+                (start, end)
+            }
+            None => (0, 0),
+        };
+
+        self.build(raw_start, raw_end, &tls_info.callback_rvas)
+    }
+
+    /// Calculate the size needed for TLS data.
+    pub fn calculate_size(&self, num_callbacks: usize) -> usize {
+        let ptr_size = if self.is_64bit { 8 } else { 4 };
+        let dir_size = if self.is_64bit {
+            TlsDirectory64::SIZE
+        } else {
+            TlsDirectory32::SIZE
+        };
+        dir_size + 4 + ptr_size * (num_callbacks + 1)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
