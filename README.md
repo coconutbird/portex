@@ -64,6 +64,24 @@ println!("Entry point: {:#x}", headers.entry_point());
 | `clr` | CLR/.NET runtime header |
 | `loadconfig` | Load configuration directory |
 
+## Building PEs from Scratch
+
+```rust
+use portex::{PE, MachineType, Subsystem};
+use portex::section::characteristics;
+
+let code = vec![0xCC; 256]; // Your code here
+
+let pe = PE::builder()
+    .machine(MachineType::Amd64)
+    .subsystem(Subsystem::WindowsCui)
+    .entry_point(0x1000)
+    .add_section(".text", code, characteristics::CODE | characteristics::EXECUTE | characteristics::READ)
+    .build();
+
+std::fs::write("output.exe", pe.build())?;
+```
+
 ## Modifying PEs
 
 ```rust
@@ -73,9 +91,8 @@ use portex::PE;
 let mut pe = PE::from_file("example.exe")?;
 
 // Modify imports, exports, resources, etc.
-if let Some(imports) = pe.imports()? {
-    pe.update_imports(imports)?;
-}
+let imports = pe.imports()?;
+pe.update_imports(imports, None)?;
 
 // Write back to disk
 std::fs::write("modified.exe", pe.build())?;

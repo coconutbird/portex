@@ -47,6 +47,7 @@
 //! ```
 
 pub mod bound_import;
+pub mod builder;
 pub mod checksum;
 pub mod clr;
 pub mod coff;
@@ -74,6 +75,7 @@ pub mod validation;
 pub use bound_import::{
     BoundForwarderRef, BoundImportBuilder, BoundImportDescriptor, BoundImportDirectory,
 };
+pub use builder::PEBuilder;
 pub use checksum::{calculate_checksum, checksum_field_offset, compute_pe_checksum};
 pub use clr::CliHeader;
 pub use coff::{CoffHeader, MachineType};

@@ -38,7 +38,7 @@ pub mod characteristics {
 }
 
 /// IMAGE_SECTION_HEADER - 40 bytes
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SectionHeader {
     pub name: [u8; 8],
     pub virtual_size: u32,

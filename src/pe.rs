@@ -102,6 +102,24 @@ pub struct PEHeaders {
 }
 
 impl PE {
+    /// Create a new PE builder for constructing PEs from scratch.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use portex::{PE, MachineType, Subsystem};
+    /// use portex::section::characteristics;
+    ///
+    /// let pe = PE::builder()
+    ///     .machine(MachineType::Amd64)
+    ///     .subsystem(Subsystem::WindowsCui)
+    ///     .add_section(".text", vec![0xCC; 256], characteristics::CODE | characteristics::EXECUTE | characteristics::READ)
+    ///     .build();
+    /// ```
+    pub fn builder() -> crate::builder::PEBuilder {
+        crate::builder::PEBuilder::new()
+    }
+
     /// Parse a PE file from a byte slice.
     #[must_use = "parsing returns a PE structure that should be used"]
     pub fn parse(data: &[u8]) -> Result<Self> {
@@ -572,6 +590,67 @@ impl PE {
             OptionalHeader::Pe32(h) => h.size_of_image = size,
             OptionalHeader::Pe32Plus(h) => h.size_of_image = size,
         }
+    }
+
+    // ========== Section Management ==========
+
+    /// Remove a section by index. Returns the removed section, or None if index is out of bounds.
+    ///
+    /// **Warning**: Removing a section may break the PE if other data directories
+    /// or code reference data in that section. Use with caution.
+    pub fn remove_section_at(&mut self, index: usize) -> Option<Section> {
+        if index < self.sections.len() {
+            self.coff_header.number_of_sections = (self.sections.len() - 1) as u16;
+            Some(self.sections.remove(index))
+        } else {
+            None
+        }
+    }
+
+    /// Find a section by name.
+    pub fn find_section(&self, name: &str) -> Option<&Section> {
+        self.sections.iter().find(|s| s.name() == name)
+    }
+
+    /// Find a section by name (mutable).
+    pub fn find_section_mut(&mut self, name: &str) -> Option<&mut Section> {
+        self.sections.iter_mut().find(|s| s.name() == name)
+    }
+
+    /// Resize a section's data. If new size is larger, pads with zeros.
+    /// If smaller, truncates the data.
+    ///
+    /// Returns true if the section was found and resized, false otherwise.
+    pub fn resize_section(&mut self, name: &str, new_size: usize) -> bool {
+        if let Some(section) = self.find_section_mut(name) {
+            section.data.resize(new_size, 0);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Add a new section with the given name, data, and characteristics.
+    /// This is a convenience method that creates a Section from parts.
+    /// The section layout (RVA, file offset) will be calculated on the next `update_layout()` or `build()`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use portex::PE;
+    /// use portex::section::characteristics;
+    ///
+    /// let mut pe = PE::from_file("input.exe")?;
+    /// pe.add_section_with_data(".newsec", vec![0u8; 0x1000], characteristics::INITIALIZED_DATA | characteristics::READ);
+    /// pe.write_to_file("output.exe")?;
+    /// # Ok::<(), portex::Error>(())
+    /// ```
+    pub fn add_section_with_data(&mut self, name: &str, data: Vec<u8>, characteristics: u32) {
+        let mut header = SectionHeader::default();
+        header.set_name(name);
+        header.characteristics = characteristics;
+        self.sections.push(Section { header, data });
+        self.coff_header.number_of_sections = self.sections.len() as u16;
     }
 
     /// Build the PE file as a byte vector.
