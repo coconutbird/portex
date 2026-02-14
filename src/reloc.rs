@@ -279,6 +279,70 @@ impl RelocationTable {
         }
         output
     }
+
+    /// Calculate total size when serialized.
+    pub fn calculate_size(&self) -> usize {
+        self.blocks.iter().map(|b| {
+            let entry_count = b.entries.len();
+            // Pad to 4-byte boundary
+            let padded_count = if entry_count % 2 == 1 { entry_count + 1 } else { entry_count };
+            RelocationBlock::HEADER_SIZE + padded_count * 2
+        }).sum()
+    }
+
+    /// Add a relocation entry at a specific RVA.
+    pub fn add_relocation(&mut self, rva: u32, reloc_type: RelocationType) {
+        let page_rva = rva & !0xFFF; // Round down to 4KB page
+        let offset = (rva & 0xFFF) as u16;
+
+        // Find or create block for this page
+        let block = if let Some(block) = self.blocks.iter_mut().find(|b| b.page_rva == page_rva) {
+            block
+        } else {
+            self.blocks.push(RelocationBlock {
+                page_rva,
+                block_size: 0, // Will be calculated on serialize
+                entries: Vec::new(),
+            });
+            self.blocks.last_mut().unwrap()
+        };
+
+        block.entries.push(RelocationEntry { reloc_type, offset });
+    }
+
+    /// Add a HIGHLOW (32-bit) relocation.
+    pub fn add_highlow(&mut self, rva: u32) {
+        self.add_relocation(rva, RelocationType::HighLow);
+    }
+
+    /// Add a DIR64 (64-bit) relocation.
+    pub fn add_dir64(&mut self, rva: u32) {
+        self.add_relocation(rva, RelocationType::Dir64);
+    }
+
+    /// Sort blocks by page RVA and ensure each block is padded to 4-byte boundary.
+    pub fn normalize(&mut self) {
+        // Sort blocks
+        self.blocks.sort_by_key(|b| b.page_rva);
+
+        // Pad each block to 4-byte boundary
+        for block in &mut self.blocks {
+            if block.entries.len() % 2 == 1 {
+                block.entries.push(RelocationEntry {
+                    reloc_type: RelocationType::Absolute,
+                    offset: 0,
+                });
+            }
+            // Update block_size
+            block.block_size = (RelocationBlock::HEADER_SIZE + block.entries.len() * 2) as u32;
+        }
+    }
+
+    /// Build normalized relocation table bytes.
+    pub fn build(&mut self) -> Vec<u8> {
+        self.normalize();
+        self.to_bytes()
+    }
 }
 
 #[cfg(test)]
@@ -323,6 +387,33 @@ mod tests {
         assert_eq!(block.entries[0].offset, 0x10);
         assert!(block.entries[2].is_padding());
         assert_eq!(block.entries[3].reloc_type, RelocationType::Dir64);
+    }
+
+    #[test]
+    fn test_relocation_table_builder() {
+        let mut table = RelocationTable::default();
+
+        // Add some relocations across different pages
+        table.add_highlow(0x1010);
+        table.add_highlow(0x1020);
+        table.add_dir64(0x2008);
+        table.add_highlow(0x1030); // Same page as first two
+
+        let data = table.build();
+
+        // Parse it back
+        let read_fn = |rva: u32, len: usize| -> Option<Vec<u8>> {
+            let offset = rva as usize;
+            if offset >= data.len() {
+                return None;
+            }
+            let available = (data.len() - offset).min(len);
+            Some(data[offset..offset + available].to_vec())
+        };
+
+        let parsed = RelocationTable::parse(0, data.len() as u32, read_fn).unwrap();
+        assert_eq!(parsed.blocks.len(), 2); // Two pages: 0x1000 and 0x2000
+        assert_eq!(parsed.relocation_count(), 4);
     }
 }
 

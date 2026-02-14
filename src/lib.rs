@@ -27,8 +27,10 @@
 //! println!("Entry point: {:#x}", headers.entry_point());
 //! ```
 
+pub mod checksum;
 pub mod coff;
 pub mod data_dir;
+pub mod debug;
 pub mod dos;
 pub mod error;
 pub mod export;
@@ -38,8 +40,12 @@ pub mod optional;
 pub mod pe;
 pub mod reader;
 pub mod reloc;
+pub mod rich;
 pub mod section;
+pub mod tls;
 
+pub use checksum::{calculate_checksum, checksum_field_offset, compute_pe_checksum};
+pub use debug::{CodeViewRsds, DebugDirectory, DebugInfo, DebugType};
 pub use error::{Error, Result};
 pub use export::{ExportAddress, ExportDirectory, ExportTable, ExportTableBuilder, ExportedFunction};
 pub use import::{ImportDescriptor, ImportTable, ImportTableBuilder, ImportThunk, ImportedDll};
@@ -47,5 +53,7 @@ pub use layout::LayoutConfig;
 pub use pe::{PEHeaders, PE};
 pub use reader::{BaseAddressReader, FileReader, Reader, SliceReader, VecReader};
 pub use reloc::{RelocationBlock, RelocationEntry, RelocationTable, RelocationType};
+pub use rich::{RichEntry, RichHeader};
 pub use section::{Section, SectionHeader};
+pub use tls::{TlsDirectory, TlsDirectory32, TlsDirectory64, TlsInfo};
 
