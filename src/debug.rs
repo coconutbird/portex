@@ -274,6 +274,103 @@ impl DebugInfo {
     }
 }
 
+/// Builder for debug directories.
+///
+/// Debug directories can contain multiple entries (CodeView, POGO, Repro, etc.)
+/// but the most common is a single CodeView entry with PDB info.
+///
+/// # Example
+///
+/// ```
+/// use portex::debug::{DebugBuilder, DebugType, CodeViewRsds};
+///
+/// // Create a simple CodeView entry
+/// let codeview = CodeViewRsds {
+///     guid: [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+///            0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00],
+///     age: 1,
+///     pdb_path: "C:\\app\\example.pdb".to_string(),
+/// };
+///
+/// let builder = DebugBuilder::new(0x3000);
+/// let (data, dir_size, entries) = builder.build_codeview(&codeview);
+/// assert_eq!(entries.len(), 1);
+/// assert_eq!(entries[0].get_type(), DebugType::CodeView);
+/// ```
+#[derive(Debug, Clone)]
+pub struct DebugBuilder {
+    /// Base RVA where the debug section will be placed.
+    base_rva: u32,
+}
+
+impl DebugBuilder {
+    /// Create a new debug builder.
+    pub fn new(base_rva: u32) -> Self {
+        Self { base_rva }
+    }
+
+    /// Build a CodeView-only debug directory.
+    ///
+    /// Returns (data, directory_size, debug_directories) where:
+    /// - `data` is the raw bytes to write to the section
+    /// - `directory_size` is the size of the debug directory entries (for data directory)
+    /// - `debug_directories` contains the parsed directories for inspection
+    pub fn build_codeview(&self, codeview: &CodeViewRsds) -> (Vec<u8>, u32, Vec<DebugDirectory>) {
+        // Layout: [DebugDirectory (28 bytes)] [CodeView data]
+        let cv_data = codeview.to_bytes();
+        let cv_offset = DebugDirectory::SIZE as u32;
+
+        let mut dir = DebugDirectory::default();
+        dir.debug_type = DebugType::CodeView as u32;
+        dir.size_of_data = cv_data.len() as u32;
+        dir.address_of_raw_data = self.base_rva + cv_offset;
+        dir.pointer_to_raw_data = 0; // Caller must update after section layout
+
+        let mut data = Vec::with_capacity(DebugDirectory::SIZE + cv_data.len());
+        data.extend_from_slice(&dir.to_bytes());
+        data.extend_from_slice(&cv_data);
+
+        let dir_size = DebugDirectory::SIZE as u32;
+        (data, dir_size, vec![dir])
+    }
+
+    /// Build from an existing DebugInfo structure.
+    ///
+    /// This rebuilds all directories and their data (only CodeView data is preserved).
+    pub fn build(&self, debug_info: &DebugInfo) -> (Vec<u8>, u32, Vec<DebugDirectory>) {
+        if debug_info.directories.is_empty() {
+            return (Vec::new(), 0, Vec::new());
+        }
+
+        // For now, only rebuild CodeView if present
+        if let Some(ref codeview) = debug_info.codeview {
+            return self.build_codeview(codeview);
+        }
+
+        // If no CodeView, just rebuild the directory entries without data
+        let dir_size = (debug_info.directories.len() * DebugDirectory::SIZE) as u32;
+        let mut data = Vec::with_capacity(dir_size as usize);
+        let mut dirs = Vec::new();
+
+        for orig_dir in &debug_info.directories {
+            let mut dir = *orig_dir;
+            // Clear data pointers - caller needs to handle raw data separately
+            dir.address_of_raw_data = 0;
+            dir.pointer_to_raw_data = 0;
+            dir.size_of_data = 0;
+            data.extend_from_slice(&dir.to_bytes());
+            dirs.push(dir);
+        }
+
+        (data, dir_size, dirs)
+    }
+
+    /// Calculate the size needed for a CodeView debug entry.
+    pub fn calculate_codeview_size(codeview: &CodeViewRsds) -> usize {
+        DebugDirectory::SIZE + 4 + 16 + 4 + codeview.pdb_path.len() + 1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -786,6 +786,120 @@ impl PE {
         }
     }
 
+    /// Update the debug directory with a CodeView entry pointing to a PDB.
+    ///
+    /// This is the most common debug directory format. Creates a single CodeView RSDS entry.
+    /// If target_section is None, uses ".rdata" or the last section.
+    ///
+    /// # Arguments
+    /// * `codeview` - The CodeView info containing PDB path and GUID
+    /// * `target_section` - Optional section to place the debug data
+    ///
+    /// Returns the RVA where the debug directory was written.
+    pub fn update_debug_codeview(
+        &mut self,
+        codeview: &crate::debug::CodeViewRsds,
+        target_section: Option<&str>,
+    ) -> Result<u32> {
+        use crate::data_dir::DataDirectoryType;
+        use crate::debug::DebugBuilder;
+
+        // Find target section
+        let section_name: String = target_section
+            .map(|s| s.to_string())
+            .or_else(|| {
+                if self.section_by_name(".rdata").is_some() {
+                    Some(".rdata".to_string())
+                } else {
+                    self.sections.last().map(|s| s.name().to_string())
+                }
+            })
+            .unwrap_or_else(|| ".rdata".to_string());
+
+        let section_idx = self.sections.iter().position(|s| s.name() == section_name);
+        let section_idx = match section_idx {
+            Some(idx) => idx,
+            None => return Err(crate::Error::invalid_section(&section_name)),
+        };
+
+        // Calculate append RVA
+        let section = &self.sections[section_idx];
+        let append_rva = section.header.virtual_address + section.header.virtual_size;
+
+        // Build debug data with correct RVA
+        let builder = DebugBuilder::new(append_rva);
+        let (data, dir_size, _) = builder.build_codeview(codeview);
+
+        // Append data to section
+        self.sections[section_idx].append_data(&data);
+
+        self.update_layout();
+        self.set_data_directory(DataDirectoryType::Debug, append_rva, dir_size);
+
+        Ok(append_rva)
+    }
+
+    /// Update the debug directory from a DebugInfo structure.
+    ///
+    /// Note: Only CodeView data is fully preserved. Other debug data types
+    /// may not be correctly rebuilt as their raw data is not stored in DebugInfo.
+    ///
+    /// Returns the RVA where the debug directory was written.
+    pub fn update_debug(
+        &mut self,
+        debug_info: &crate::debug::DebugInfo,
+        target_section: Option<&str>,
+    ) -> Result<u32> {
+        // If there's CodeView info, use the specialized method
+        if let Some(ref codeview) = debug_info.codeview {
+            return self.update_debug_codeview(codeview, target_section);
+        }
+
+        use crate::data_dir::DataDirectoryType;
+
+        // No debug info to write
+        if debug_info.directories.is_empty() {
+            self.clear_data_directory(DataDirectoryType::Debug);
+            return Ok(0);
+        }
+
+        // Find target section
+        let section_name: String = target_section
+            .map(|s| s.to_string())
+            .or_else(|| {
+                if self.section_by_name(".rdata").is_some() {
+                    Some(".rdata".to_string())
+                } else {
+                    self.sections.last().map(|s| s.name().to_string())
+                }
+            })
+            .unwrap_or_else(|| ".rdata".to_string());
+
+        let section_idx = self.sections.iter().position(|s| s.name() == section_name);
+        let section_idx = match section_idx {
+            Some(idx) => idx,
+            None => return Err(crate::Error::invalid_section(&section_name)),
+        };
+
+        // Build directory entries
+        let mut data = Vec::with_capacity(debug_info.directories.len() * crate::debug::DebugDirectory::SIZE);
+        for dir in &debug_info.directories {
+            data.extend_from_slice(&dir.to_bytes());
+        }
+
+        // Calculate append RVA
+        let section = &self.sections[section_idx];
+        let append_rva = section.header.virtual_address + section.header.virtual_size;
+
+        // Append data to section
+        self.sections[section_idx].append_data(&data);
+
+        self.update_layout();
+        self.set_data_directory(DataDirectoryType::Debug, append_rva, data.len() as u32);
+
+        Ok(append_rva)
+    }
+
     /// Parse the CLI header (IMAGE_COR20_HEADER) for .NET assemblies.
     ///
     /// Returns `None` if the CLR data directory is not present.

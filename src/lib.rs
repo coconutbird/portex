@@ -80,7 +80,7 @@ pub use checksum::{calculate_checksum, checksum_field_offset, compute_pe_checksu
 pub use clr::CliHeader;
 pub use coff::{CoffHeader, MachineType};
 pub use data_dir::{DataDirectory, DataDirectoryType};
-pub use debug::{CodeViewRsds, DebugDirectory, DebugInfo, DebugType};
+pub use debug::{CodeViewRsds, DebugBuilder, DebugDirectory, DebugInfo, DebugType};
 pub use delay_import::{
     DelayImportBuilder, DelayImportDirectory, DelayImportThunk, DelayLoadDescriptor, DelayLoadedDll,
 };
