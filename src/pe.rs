@@ -935,7 +935,8 @@ impl PE {
         };
 
         // Build directory entries
-        let mut data = Vec::with_capacity(debug_info.directories.len() * crate::debug::DebugDirectory::SIZE);
+        let mut data =
+            Vec::with_capacity(debug_info.directories.len() * crate::debug::DebugDirectory::SIZE);
         for dir in &debug_info.directories {
             data.extend_from_slice(&dir.to_bytes());
         }

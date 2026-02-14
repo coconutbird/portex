@@ -387,8 +387,14 @@ impl ExceptionBuilder {
     /// * `begin_rva` - RVA of the function start
     /// * `end_rva` - RVA of the function end
     /// * `unwind_info_rva` - RVA of the unwind information
-    pub fn add_function(&mut self, begin_rva: u32, end_rva: u32, unwind_info_rva: u32) -> &mut Self {
-        self.directory.add_function(begin_rva, end_rva, unwind_info_rva);
+    pub fn add_function(
+        &mut self,
+        begin_rva: u32,
+        end_rva: u32,
+        unwind_info_rva: u32,
+    ) -> &mut Self {
+        self.directory
+            .add_function(begin_rva, end_rva, unwind_info_rva);
         self
     }
 

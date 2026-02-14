@@ -398,14 +398,16 @@ impl TlsBuilder {
     pub fn build_from_info(&self, tls_info: &TlsInfo) -> (Vec<u8>, u32) {
         let (raw_start, raw_end) = match &tls_info.directory {
             Some(TlsDirectory::Tls32(dir)) => {
-                let start = (dir.start_address_of_raw_data as u64)
-                    .saturating_sub(self.image_base) as u32;
-                let end = (dir.end_address_of_raw_data as u64)
-                    .saturating_sub(self.image_base) as u32;
+                let start =
+                    (dir.start_address_of_raw_data as u64).saturating_sub(self.image_base) as u32;
+                let end =
+                    (dir.end_address_of_raw_data as u64).saturating_sub(self.image_base) as u32;
                 (start, end)
             }
             Some(TlsDirectory::Tls64(dir)) => {
-                let start = dir.start_address_of_raw_data.saturating_sub(self.image_base) as u32;
+                let start = dir
+                    .start_address_of_raw_data
+                    .saturating_sub(self.image_base) as u32;
                 let end = dir.end_address_of_raw_data.saturating_sub(self.image_base) as u32;
                 (start, end)
             }

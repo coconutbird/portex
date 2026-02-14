@@ -20,8 +20,10 @@
 
 use crate::coff::{CoffHeader, MachineType};
 use crate::data_dir::DataDirectory;
-use crate::dos::{DosHeader, DOS_SIGNATURE};
-use crate::optional::{OptionalHeader, OptionalHeader32, OptionalHeader64, Subsystem, PE32_MAGIC, PE32PLUS_MAGIC};
+use crate::dos::{DOS_SIGNATURE, DosHeader};
+use crate::optional::{
+    OptionalHeader, OptionalHeader32, OptionalHeader64, PE32_MAGIC, PE32PLUS_MAGIC, Subsystem,
+};
 use crate::pe::PE;
 use crate::section::{Section, SectionHeader};
 
@@ -67,7 +69,10 @@ impl PEBuilder {
     pub fn machine(mut self, machine: MachineType) -> Self {
         self.machine = machine;
         // Auto-detect 64-bit from machine type
-        self.is_64bit = matches!(machine, MachineType::Amd64 | MachineType::Arm64 | MachineType::Ia64);
+        self.is_64bit = matches!(
+            machine,
+            MachineType::Amd64 | MachineType::Arm64 | MachineType::Ia64
+        );
         // Adjust default image base
         if !self.is_64bit {
             self.image_base = 0x0040_0000; // Default for 32-bit
@@ -125,7 +130,8 @@ impl PEBuilder {
 
     /// Add a section with the given name, data, and characteristics.
     pub fn add_section(mut self, name: &str, data: Vec<u8>, characteristics: u32) -> Self {
-        self.sections.push((name.to_string(), data, characteristics));
+        self.sections
+            .push((name.to_string(), data, characteristics));
         self
     }
 
@@ -133,16 +139,16 @@ impl PEBuilder {
     pub fn build(self) -> PE {
         // Create DOS header
         let dos_header = self.create_dos_header();
-        
+
         // Create COFF header
         let coff_header = self.create_coff_header();
-        
+
         // Create optional header
         let optional_header = self.create_optional_header();
-        
+
         // Create sections
         let sections = self.create_sections();
-        
+
         // Create PE and update layout
         let mut pe = PE {
             dos_header,
@@ -151,7 +157,7 @@ impl PEBuilder {
             optional_header,
             sections,
         };
-        
+
         pe.update_layout();
         pe
     }
@@ -204,7 +210,13 @@ impl PEBuilder {
 
     fn create_optional_header(&self) -> OptionalHeader {
         // 16 data directories (standard)
-        let data_directories = vec![DataDirectory { virtual_address: 0, size: 0 }; 16];
+        let data_directories = vec![
+            DataDirectory {
+                virtual_address: 0,
+                size: 0
+            };
+            16
+        ];
 
         if self.is_64bit {
             OptionalHeader::Pe32Plus(OptionalHeader64 {
@@ -226,7 +238,7 @@ impl PEBuilder {
                 major_subsystem_version: 6,
                 minor_subsystem_version: 0,
                 win32_version_value: 0,
-                size_of_image: 0, // Updated by layout
+                size_of_image: 0,   // Updated by layout
                 size_of_headers: 0, // Updated by layout
                 check_sum: 0,
                 subsystem: self.subsystem as u16,
@@ -315,7 +327,11 @@ mod tests {
             .machine(MachineType::Amd64)
             .subsystem(Subsystem::WindowsCui)
             .entry_point(0x1000)
-            .add_section(".text", code, characteristics::CODE | characteristics::EXECUTE | characteristics::READ)
+            .add_section(
+                ".text",
+                code,
+                characteristics::CODE | characteristics::EXECUTE | characteristics::READ,
+            )
             .build();
 
         assert!(pe.is_64bit());
@@ -327,7 +343,11 @@ mod tests {
     fn test_builder_32bit() {
         let pe = PEBuilder::new()
             .machine(MachineType::I386)
-            .add_section(".text", vec![0x90; 0x10], characteristics::CODE | characteristics::EXECUTE)
+            .add_section(
+                ".text",
+                vec![0x90; 0x10],
+                characteristics::CODE | characteristics::EXECUTE,
+            )
             .build();
 
         assert!(!pe.is_64bit());
@@ -339,8 +359,16 @@ mod tests {
         let pe = PEBuilder::new()
             .machine(MachineType::Amd64)
             .subsystem(Subsystem::WindowsGui)
-            .add_section(".text", vec![0xCC; 256], characteristics::CODE | characteristics::EXECUTE | characteristics::READ)
-            .add_section(".data", vec![0x00; 64], characteristics::INITIALIZED_DATA | characteristics::READ | characteristics::WRITE)
+            .add_section(
+                ".text",
+                vec![0xCC; 256],
+                characteristics::CODE | characteristics::EXECUTE | characteristics::READ,
+            )
+            .add_section(
+                ".data",
+                vec![0x00; 64],
+                characteristics::INITIALIZED_DATA | characteristics::READ | characteristics::WRITE,
+            )
             .build();
 
         // Build to bytes and parse back
@@ -352,4 +380,3 @@ mod tests {
         assert_eq!(parsed.sections[1].name(), ".data");
     }
 }
-
