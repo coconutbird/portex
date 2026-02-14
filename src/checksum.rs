@@ -4,7 +4,7 @@
 //! particularly for drivers and system files.
 
 /// Calculate the PE checksum for a file.
-/// 
+///
 /// The algorithm:
 /// 1. Sum all 16-bit words, using 32-bit arithmetic with carry-add
 /// 2. Skip the checksum field itself (at offset checksum_offset)
@@ -104,4 +104,3 @@ mod tests {
         assert_eq!(checksum, 0x1418);
     }
 }
-

@@ -67,16 +67,12 @@ pub fn headers_size(num_sections: usize, optional_header_size: usize) -> usize {
         + 4                      // PE signature
         + CoffHeader::SIZE       // COFF header
         + optional_header_size   // Optional header
-        + num_sections * SectionHeader::SIZE  // Section table
+        + num_sections * SectionHeader::SIZE // Section table
 }
 
 /// Recalculate section layout (RVAs and file offsets).
 /// Returns the total file size.
-pub fn layout_sections(
-    sections: &mut [Section],
-    config: &LayoutConfig,
-    headers_size: u32,
-) -> u32 {
+pub fn layout_sections(sections: &mut [Section], config: &LayoutConfig, headers_size: u32) -> u32 {
     // First section starts after headers, aligned to section alignment
     let mut current_rva = config.align_section(headers_size);
     let mut current_file_offset = config.align_file(headers_size);
@@ -116,8 +112,8 @@ pub fn calculate_size_of_image(sections: &[Section], config: &LayoutConfig) -> u
     }
 
     let last = &sections[sections.len() - 1];
-    let end_rva = last.header.virtual_address
-        + config.align_section(last.header.virtual_size.max(1));
+    let end_rva =
+        last.header.virtual_address + config.align_section(last.header.virtual_size.max(1));
     end_rva
 }
 
@@ -143,4 +139,3 @@ mod tests {
         assert_eq!(align_down(0x3FF, 0x200), 0x200);
     }
 }
-

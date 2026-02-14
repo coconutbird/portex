@@ -157,11 +157,18 @@ impl CodeViewRsds {
 
         // Read null-terminated path
         let path_data = &data[24..];
-        let end = path_data.iter().position(|&b| b == 0).unwrap_or(path_data.len());
-        let pdb_path = String::from_utf8(path_data[..end].to_vec())
-            .map_err(|_| Error::InvalidUtf8)?;
+        let end = path_data
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(path_data.len());
+        let pdb_path =
+            String::from_utf8(path_data[..end].to_vec()).map_err(|_| Error::InvalidUtf8)?;
 
-        Ok(Self { guid, age, pdb_path })
+        Ok(Self {
+            guid,
+            age,
+            pdb_path,
+        })
     }
 
     /// Serialize to bytes.
@@ -182,8 +189,14 @@ impl CodeViewRsds {
             u32::from_le_bytes([self.guid[0], self.guid[1], self.guid[2], self.guid[3]]),
             u16::from_le_bytes([self.guid[4], self.guid[5]]),
             u16::from_le_bytes([self.guid[6], self.guid[7]]),
-            self.guid[8], self.guid[9], self.guid[10], self.guid[11],
-            self.guid[12], self.guid[13], self.guid[14], self.guid[15]
+            self.guid[8],
+            self.guid[9],
+            self.guid[10],
+            self.guid[11],
+            self.guid[12],
+            self.guid[13],
+            self.guid[14],
+            self.guid[15]
         )
     }
 }
@@ -216,9 +229,12 @@ impl DebugInfo {
 
             // Parse CodeView if present
             if dir.get_type() == DebugType::CodeView && dir.size_of_data > 0 {
-                if let Some(cv_data) = read_at_rva(dir.address_of_raw_data, dir.size_of_data as usize) {
+                if let Some(cv_data) =
+                    read_at_rva(dir.address_of_raw_data, dir.size_of_data as usize)
+                {
                     if cv_data.len() >= 4 {
-                        let sig = u32::from_le_bytes([cv_data[0], cv_data[1], cv_data[2], cv_data[3]]);
+                        let sig =
+                            u32::from_le_bytes([cv_data[0], cv_data[1], cv_data[2], cv_data[3]]);
                         if sig == CV_SIGNATURE_RSDS {
                             if let Ok(rsds) = CodeViewRsds::parse(&cv_data) {
                                 codeview = Some(rsds);
@@ -231,7 +247,10 @@ impl DebugInfo {
             directories.push(dir);
         }
 
-        Ok(Self { directories, codeview })
+        Ok(Self {
+            directories,
+            codeview,
+        })
     }
 
     /// Get the PDB path if available.
@@ -282,4 +301,3 @@ mod tests {
         assert_eq!(original.pdb_path, parsed.pdb_path);
     }
 }
-

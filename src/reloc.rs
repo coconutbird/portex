@@ -233,7 +233,10 @@ impl RelocationTable {
                     RelocationType::HighLow => {
                         if rva + 4 <= buffer.len() {
                             let value = u32::from_le_bytes([
-                                buffer[rva], buffer[rva + 1], buffer[rva + 2], buffer[rva + 3],
+                                buffer[rva],
+                                buffer[rva + 1],
+                                buffer[rva + 2],
+                                buffer[rva + 3],
                             ]);
                             let new_value = (value as i64 + delta) as u32;
                             buffer[rva..rva + 4].copy_from_slice(&new_value.to_le_bytes());
@@ -242,8 +245,14 @@ impl RelocationTable {
                     RelocationType::Dir64 => {
                         if is_64bit && rva + 8 <= buffer.len() {
                             let value = u64::from_le_bytes([
-                                buffer[rva], buffer[rva + 1], buffer[rva + 2], buffer[rva + 3],
-                                buffer[rva + 4], buffer[rva + 5], buffer[rva + 6], buffer[rva + 7],
+                                buffer[rva],
+                                buffer[rva + 1],
+                                buffer[rva + 2],
+                                buffer[rva + 3],
+                                buffer[rva + 4],
+                                buffer[rva + 5],
+                                buffer[rva + 6],
+                                buffer[rva + 7],
                             ]);
                             let new_value = (value as i64 + delta) as u64;
                             buffer[rva..rva + 8].copy_from_slice(&new_value.to_le_bytes());
@@ -282,12 +291,19 @@ impl RelocationTable {
 
     /// Calculate total size when serialized.
     pub fn calculate_size(&self) -> usize {
-        self.blocks.iter().map(|b| {
-            let entry_count = b.entries.len();
-            // Pad to 4-byte boundary
-            let padded_count = if entry_count % 2 == 1 { entry_count + 1 } else { entry_count };
-            RelocationBlock::HEADER_SIZE + padded_count * 2
-        }).sum()
+        self.blocks
+            .iter()
+            .map(|b| {
+                let entry_count = b.entries.len();
+                // Pad to 4-byte boundary
+                let padded_count = if entry_count % 2 == 1 {
+                    entry_count + 1
+                } else {
+                    entry_count
+                };
+                RelocationBlock::HEADER_SIZE + padded_count * 2
+            })
+            .sum()
     }
 
     /// Add a relocation entry at a specific RVA.
@@ -416,4 +432,3 @@ mod tests {
         assert_eq!(parsed.relocation_count(), 4);
     }
 }
-

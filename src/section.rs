@@ -302,7 +302,9 @@ mod tests {
             pointer_to_linenumbers: 0,
             number_of_relocations: 0,
             number_of_linenumbers: 0,
-            characteristics: characteristics::CODE | characteristics::EXECUTE | characteristics::READ,
+            characteristics: characteristics::CODE
+                | characteristics::EXECUTE
+                | characteristics::READ,
         };
 
         let bytes = original.to_bytes();

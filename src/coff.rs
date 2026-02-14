@@ -213,7 +213,8 @@ mod tests {
             pointer_to_symbol_table: 0,
             number_of_symbols: 0,
             size_of_optional_header: 240,
-            characteristics: characteristics::EXECUTABLE_IMAGE | characteristics::LARGE_ADDRESS_AWARE,
+            characteristics: characteristics::EXECUTABLE_IMAGE
+                | characteristics::LARGE_ADDRESS_AWARE,
         };
 
         let mut buf = [0u8; 20];

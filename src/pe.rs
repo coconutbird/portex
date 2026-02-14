@@ -1,12 +1,12 @@
 //! Main PE file structure and parsing.
 
-use crate::coff::{verify_pe_signature, CoffHeader, PE_SIGNATURE};
+use crate::Result;
+use crate::coff::{CoffHeader, PE_SIGNATURE, verify_pe_signature};
 use crate::dos::DosHeader;
 use crate::layout::{self, LayoutConfig};
 use crate::optional::OptionalHeader;
 use crate::reader::{FileReader, Reader, SliceReader};
 use crate::section::{Section, SectionHeader};
-use crate::Result;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
@@ -231,7 +231,10 @@ impl PE {
     /// Append data to a section and return the RVA where it was placed.
     /// Returns None if the section doesn't exist.
     pub fn append_to_section(&mut self, section_name: &str, data: &[u8]) -> Option<u32> {
-        let section = self.sections.iter_mut().find(|s| s.name() == section_name)?;
+        let section = self
+            .sections
+            .iter_mut()
+            .find(|s| s.name() == section_name)?;
         let rva = section.header.virtual_address + section.header.virtual_size;
         section.append_data(data);
         Some(rva)
@@ -245,7 +248,7 @@ impl PE {
         imports: crate::import::ImportTable,
         target_section: Option<&str>,
     ) -> Result<u32> {
-        use crate::data_dir::index::{IMPORT, IAT};
+        use crate::data_dir::index::{IAT, IMPORT};
         use crate::import::ImportTableBuilder;
 
         if imports.is_empty() {
@@ -324,8 +327,8 @@ impl PE {
         self.sections[section_idx].append_data(&data);
 
         // Update data directories
-        let import_size = (imports.dlls.len() + 1) as u32
-            * crate::import::ImportDescriptor::SIZE as u32;
+        let import_size =
+            (imports.dlls.len() + 1) as u32 * crate::import::ImportDescriptor::SIZE as u32;
         self.set_data_directory(IMPORT, append_rva, import_size);
         self.set_data_directory(IAT, iat_rva, iat_size);
 
@@ -424,12 +427,10 @@ impl PE {
     /// Call this after modifying sections before writing.
     pub fn update_layout(&mut self) {
         let config = LayoutConfig::from_optional_header(&self.optional_header);
-        
+
         // Calculate headers size
-        let headers_size = layout::headers_size(
-            self.sections.len(),
-            self.optional_header.size(),
-        ) as u32;
+        let headers_size =
+            layout::headers_size(self.sections.len(), self.optional_header.size()) as u32;
 
         // Update optional header's size_of_headers
         self.set_size_of_headers(config.align_file(headers_size));
@@ -507,7 +508,8 @@ impl PE {
         let sections_offset = optional_offset + self.coff_header.size_of_optional_header as usize;
         for (i, section) in self.sections.iter().enumerate() {
             let offset = sections_offset + i * SectionHeader::SIZE;
-            section.header
+            section
+                .header
                 .write(&mut output[offset..offset + SectionHeader::SIZE])
                 .ok();
         }

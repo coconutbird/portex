@@ -94,7 +94,8 @@ impl RichHeader {
         }
 
         // Get PE offset from DOS header
-        let pe_offset = u32::from_le_bytes([data[0x3C], data[0x3D], data[0x3E], data[0x3F]]) as usize;
+        let pe_offset =
+            u32::from_le_bytes([data[0x3C], data[0x3D], data[0x3E], data[0x3F]]) as usize;
         if pe_offset >= data.len() || pe_offset < 0x80 {
             return None;
         }
@@ -106,7 +107,10 @@ impl RichHeader {
 
         for i in (0..search_area.len().saturating_sub(4)).rev() {
             let value = u32::from_le_bytes([
-                search_area[i], search_area[i + 1], search_area[i + 2], search_area[i + 3],
+                search_area[i],
+                search_area[i + 1],
+                search_area[i + 2],
+                search_area[i + 3],
             ]);
 
             // Check if this could be "Rich" XORed with something
@@ -115,7 +119,10 @@ impl RichHeader {
             // Verify by checking if next dword is the same key
             if i + 8 <= search_area.len() {
                 let next = u32::from_le_bytes([
-                    search_area[i + 4], search_area[i + 5], search_area[i + 6], search_area[i + 7],
+                    search_area[i + 4],
+                    search_area[i + 5],
+                    search_area[i + 6],
+                    search_area[i + 7],
                 ]);
                 if next == possible_key {
                     rich_pos = Some((i + 0x80, possible_key));
@@ -132,7 +139,10 @@ impl RichHeader {
 
         for i in 0..header_area.len().saturating_sub(4) {
             let value = u32::from_le_bytes([
-                header_area[i], header_area[i + 1], header_area[i + 2], header_area[i + 3],
+                header_area[i],
+                header_area[i + 1],
+                header_area[i + 2],
+                header_area[i + 3],
             ]);
 
             if value ^ key == DANS_MAGIC {
@@ -251,8 +261,16 @@ mod tests {
         let header = RichHeader {
             key: 0x12345678,
             entries: vec![
-                RichEntry { product_id: 0x0104, build_number: 30729, use_count: 5 },
-                RichEntry { product_id: 0x0105, build_number: 30729, use_count: 1 },
+                RichEntry {
+                    product_id: 0x0104,
+                    build_number: 30729,
+                    use_count: 5,
+                },
+                RichEntry {
+                    product_id: 0x0105,
+                    build_number: 30729,
+                    use_count: 1,
+                },
             ],
             offset: 0,
             size: 0,
@@ -274,4 +292,3 @@ mod tests {
         assert_eq!(parsed.entries.len(), header.entries.len());
     }
 }
-

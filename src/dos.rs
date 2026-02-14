@@ -203,4 +203,3 @@ mod tests {
         assert_eq!(data, output);
     }
 }
-

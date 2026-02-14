@@ -188,8 +188,7 @@ impl ImportTable {
         // Read up to 256 bytes for a DLL name
         let data = read_at_rva(rva, 256).ok_or(Error::InvalidRva(rva))?;
         let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
-        String::from_utf8(data[..end].to_vec())
-            .map_err(|_| Error::InvalidUtf8)
+        String::from_utf8(data[..end].to_vec()).map_err(|_| Error::InvalidUtf8)
     }
 
     fn read_thunks<F>(read_at_rva: &F, thunk_rva: u32, is_64bit: bool) -> Result<Vec<ImportThunk>>
@@ -206,8 +205,7 @@ impl ImportTable {
 
             let (is_ordinal, ordinal, hint_rva) = if is_64bit {
                 let value = u64::from_le_bytes([
-                    data[0], data[1], data[2], data[3],
-                    data[4], data[5], data[6], data[7],
+                    data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
                 ]);
                 if value == 0 {
                     break;
@@ -233,8 +231,7 @@ impl ImportTable {
                 ImportThunk::Ordinal(ordinal)
             } else {
                 // Read hint (2 bytes) + name
-                let hint_data = read_at_rva(hint_rva, 2)
-                    .ok_or(Error::InvalidRva(hint_rva))?;
+                let hint_data = read_at_rva(hint_rva, 2).ok_or(Error::InvalidRva(hint_rva))?;
                 let hint = u16::from_le_bytes([hint_data[0], hint_data[1]]);
                 let name = Self::read_string(read_at_rva, hint_rva + 2)?;
                 ImportThunk::Name { hint, name }
@@ -254,7 +251,9 @@ impl ImportTable {
 
     /// Find a DLL by name (case-insensitive).
     pub fn find_dll(&self, name: &str) -> Option<&ImportedDll> {
-        self.dlls.iter().find(|dll| dll.name.eq_ignore_ascii_case(name))
+        self.dlls
+            .iter()
+            .find(|dll| dll.name.eq_ignore_ascii_case(name))
     }
 
     /// Get total count of imported functions.
@@ -273,7 +272,11 @@ impl ImportTable {
 
     /// Add an import to an existing DLL, or create the DLL if it doesn't exist.
     pub fn add_import(&mut self, dll_name: &str, import: ImportThunk) {
-        if let Some(dll) = self.dlls.iter_mut().find(|d| d.name.eq_ignore_ascii_case(dll_name)) {
+        if let Some(dll) = self
+            .dlls
+            .iter_mut()
+            .find(|d| d.name.eq_ignore_ascii_case(dll_name))
+        {
             dll.imports.push(import);
         } else {
             self.add_dll(dll_name, vec![import]);
@@ -282,10 +285,13 @@ impl ImportTable {
 
     /// Add a named import (convenience method).
     pub fn add_named_import(&mut self, dll_name: &str, func_name: &str, hint: u16) {
-        self.add_import(dll_name, ImportThunk::Name {
-            hint,
-            name: func_name.to_string(),
-        });
+        self.add_import(
+            dll_name,
+            ImportThunk::Name {
+                hint,
+                name: func_name.to_string(),
+            },
+        );
     }
 
     /// Add an ordinal import (convenience method).
@@ -457,7 +463,9 @@ impl ImportTableBuilder {
                 name_rva: dll_name_rva,
                 first_thunk: iat_rva,
             };
-            descriptor.write(&mut data[desc_pos..desc_pos + ImportDescriptor::SIZE]).ok();
+            descriptor
+                .write(&mut data[desc_pos..desc_pos + ImportDescriptor::SIZE])
+                .ok();
             desc_pos += ImportDescriptor::SIZE;
         }
 
@@ -569,4 +577,3 @@ mod tests {
         }
     }
 }
-

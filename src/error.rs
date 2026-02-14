@@ -40,9 +40,14 @@ impl fmt::Display for Error {
             Error::InvalidDosSignature => write!(f, "Invalid DOS signature (expected 'MZ')"),
             Error::InvalidPeSignature => write!(f, "Invalid PE signature (expected 'PE\\0\\0')"),
             Error::InvalidMachineType(m) => write!(f, "Invalid machine type: {m:#06x}"),
-            Error::InvalidOptionalHeaderMagic(m) => write!(f, "Invalid optional header magic: {m:#06x}"),
+            Error::InvalidOptionalHeaderMagic(m) => {
+                write!(f, "Invalid optional header magic: {m:#06x}")
+            }
             Error::BufferTooSmall { expected, actual } => {
-                write!(f, "Buffer too small: expected {expected} bytes, got {actual}")
+                write!(
+                    f,
+                    "Buffer too small: expected {expected} bytes, got {actual}"
+                )
             }
             Error::InvalidSection(msg) => write!(f, "Invalid section: {msg}"),
             Error::InvalidDataDirectory(msg) => write!(f, "Invalid data directory: {msg}"),
@@ -69,4 +74,3 @@ impl From<io::Error> for Error {
         Error::Io(e)
     }
 }
-

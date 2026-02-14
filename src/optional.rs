@@ -178,7 +178,9 @@ impl OptionalHeader32 {
             minor_linker_version: data[3],
             size_of_code: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
             size_of_initialized_data: u32::from_le_bytes([data[8], data[9], data[10], data[11]]),
-            size_of_uninitialized_data: u32::from_le_bytes([data[12], data[13], data[14], data[15]]),
+            size_of_uninitialized_data: u32::from_le_bytes([
+                data[12], data[13], data[14], data[15],
+            ]),
             address_of_entry_point: u32::from_le_bytes([data[16], data[17], data[18], data[19]]),
             base_of_code: u32::from_le_bytes([data[20], data[21], data[22], data[23]]),
             base_of_data: u32::from_le_bytes([data[24], data[25], data[26], data[27]]),
@@ -281,7 +283,8 @@ impl OptionalHeader64 {
             });
         }
 
-        let number_of_rva_and_sizes = u32::from_le_bytes([data[108], data[109], data[110], data[111]]);
+        let number_of_rva_and_sizes =
+            u32::from_le_bytes([data[108], data[109], data[110], data[111]]);
         let dirs_count = number_of_rva_and_sizes as usize;
         let total_size = Self::BASE_SIZE + dirs_count * DataDirectory::SIZE;
 
@@ -304,7 +307,9 @@ impl OptionalHeader64 {
             minor_linker_version: data[3],
             size_of_code: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
             size_of_initialized_data: u32::from_le_bytes([data[8], data[9], data[10], data[11]]),
-            size_of_uninitialized_data: u32::from_le_bytes([data[12], data[13], data[14], data[15]]),
+            size_of_uninitialized_data: u32::from_le_bytes([
+                data[12], data[13], data[14], data[15],
+            ]),
             address_of_entry_point: u32::from_le_bytes([data[16], data[17], data[18], data[19]]),
             base_of_code: u32::from_le_bytes([data[20], data[21], data[22], data[23]]),
             image_base: u64::from_le_bytes([
@@ -481,8 +486,8 @@ impl OptionalHeader {
 
         // Read the base header to get number of data directories
         let num_dirs_offset = match magic {
-            PE32_MAGIC => offset + 92,  // Offset of number_of_rva_and_sizes in PE32
-            PE32PLUS_MAGIC => offset + 108,  // Offset in PE32+
+            PE32_MAGIC => offset + 92, // Offset of number_of_rva_and_sizes in PE32
+            PE32PLUS_MAGIC => offset + 108, // Offset in PE32+
             _ => unreachable!(),
         };
         let num_dirs = reader.read_u32_at(num_dirs_offset)? as usize;

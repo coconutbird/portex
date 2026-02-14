@@ -47,13 +47,14 @@ pub mod tls;
 pub use checksum::{calculate_checksum, checksum_field_offset, compute_pe_checksum};
 pub use debug::{CodeViewRsds, DebugDirectory, DebugInfo, DebugType};
 pub use error::{Error, Result};
-pub use export::{ExportAddress, ExportDirectory, ExportTable, ExportTableBuilder, ExportedFunction};
+pub use export::{
+    ExportAddress, ExportDirectory, ExportTable, ExportTableBuilder, ExportedFunction,
+};
 pub use import::{ImportDescriptor, ImportTable, ImportTableBuilder, ImportThunk, ImportedDll};
 pub use layout::LayoutConfig;
-pub use pe::{PEHeaders, PE};
+pub use pe::{PE, PEHeaders};
 pub use reader::{BaseAddressReader, FileReader, Reader, SliceReader, VecReader};
 pub use reloc::{RelocationBlock, RelocationEntry, RelocationTable, RelocationType};
 pub use rich::{RichEntry, RichHeader};
 pub use section::{Section, SectionHeader};
 pub use tls::{TlsDirectory, TlsDirectory32, TlsDirectory64, TlsInfo};
-

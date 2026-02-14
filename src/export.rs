@@ -132,8 +132,8 @@ impl ExportTable {
         F: Fn(u32, usize) -> Option<Vec<u8>>,
     {
         // Read export directory
-        let dir_data = read_at_rva(export_rva, ExportDirectory::SIZE)
-            .ok_or(Error::InvalidRva(export_rva))?;
+        let dir_data =
+            read_at_rva(export_rva, ExportDirectory::SIZE).ok_or(Error::InvalidRva(export_rva))?;
         let directory = ExportDirectory::parse(&dir_data)?;
 
         // Read DLL name
@@ -174,7 +174,8 @@ impl ExportTable {
         for i in 0..dir.number_of_functions {
             let addr_rva = dir.address_of_functions + i * 4;
             let addr_data = read_at_rva(addr_rva, 4).ok_or(Error::InvalidRva(addr_rva))?;
-            let func_rva = u32::from_le_bytes([addr_data[0], addr_data[1], addr_data[2], addr_data[3]]);
+            let func_rva =
+                u32::from_le_bytes([addr_data[0], addr_data[1], addr_data[2], addr_data[3]]);
 
             if func_rva == 0 {
                 continue; // Empty slot
@@ -201,9 +202,13 @@ impl ExportTable {
         for i in 0..dir.number_of_names {
             // Read name RVA
             let name_ptr_rva = dir.address_of_names + i * 4;
-            let name_ptr_data = read_at_rva(name_ptr_rva, 4).ok_or(Error::InvalidRva(name_ptr_rva))?;
+            let name_ptr_data =
+                read_at_rva(name_ptr_rva, 4).ok_or(Error::InvalidRva(name_ptr_rva))?;
             let name_rva = u32::from_le_bytes([
-                name_ptr_data[0], name_ptr_data[1], name_ptr_data[2], name_ptr_data[3],
+                name_ptr_data[0],
+                name_ptr_data[1],
+                name_ptr_data[2],
+                name_ptr_data[3],
             ]);
 
             // Read ordinal index
@@ -230,7 +235,9 @@ impl ExportTable {
 
     /// Find an export by name.
     pub fn find_by_name(&self, name: &str) -> Option<&ExportedFunction> {
-        self.exports.iter().find(|e| e.name.as_deref() == Some(name))
+        self.exports
+            .iter()
+            .find(|e| e.name.as_deref() == Some(name))
     }
 
     /// Find an export by ordinal.
@@ -243,7 +250,12 @@ impl ExportTable {
         let ordinal = if self.exports.is_empty() {
             self.directory.base
         } else {
-            self.exports.iter().map(|e| e.ordinal).max().unwrap_or(self.directory.base) + 1
+            self.exports
+                .iter()
+                .map(|e| e.ordinal)
+                .max()
+                .unwrap_or(self.directory.base)
+                + 1
         };
         self.exports.push(ExportedFunction {
             ordinal,
@@ -257,7 +269,12 @@ impl ExportTable {
         let ordinal = if self.exports.is_empty() {
             self.directory.base
         } else {
-            self.exports.iter().map(|e| e.ordinal).max().unwrap_or(self.directory.base) + 1
+            self.exports
+                .iter()
+                .map(|e| e.ordinal)
+                .max()
+                .unwrap_or(self.directory.base)
+                + 1
         };
         self.exports.push(ExportedFunction {
             ordinal,
@@ -330,7 +347,13 @@ impl ExportTableBuilder {
             }
         }
 
-        directory_size + eat_size + name_ptr_size + ordinal_table_size + dll_name_size + names_size + forwarders_size
+        directory_size
+            + eat_size
+            + name_ptr_size
+            + ordinal_table_size
+            + dll_name_size
+            + names_size
+            + forwarders_size
     }
 
     /// Build the export section data and return (section_data, export_size).
@@ -347,7 +370,9 @@ impl ExportTableBuilder {
         let eat_offset = ExportDirectory::SIZE;
         let eat_size = table.exports.len() * 4;
 
-        let named_exports: Vec<_> = table.exports.iter()
+        let named_exports: Vec<_> = table
+            .exports
+            .iter()
             .enumerate()
             .filter(|(_, e)| e.name.is_some())
             .collect();
@@ -405,7 +430,8 @@ impl ExportTableBuilder {
         }
 
         // Sort named exports by name for binary search compatibility
-        let mut sorted_names: Vec<_> = name_rvas.iter()
+        let mut sorted_names: Vec<_> = name_rvas
+            .iter()
             .map(|(idx, rva)| {
                 let name = table.exports[*idx].name.as_ref().unwrap();
                 (name.as_str(), *idx, *rva)
@@ -435,8 +461,16 @@ impl ExportTableBuilder {
             number_of_functions: table.exports.len() as u32,
             number_of_names: named_count as u32,
             address_of_functions: self.base_rva + eat_offset as u32,
-            address_of_names: if named_count > 0 { self.base_rva + name_ptr_offset as u32 } else { 0 },
-            address_of_name_ordinals: if named_count > 0 { self.base_rva + ordinal_table_offset as u32 } else { 0 },
+            address_of_names: if named_count > 0 {
+                self.base_rva + name_ptr_offset as u32
+            } else {
+                0
+            },
+            address_of_name_ordinals: if named_count > 0 {
+                self.base_rva + ordinal_table_offset as u32
+            } else {
+                0
+            },
         };
         directory.write(&mut data[directory_offset..]).ok();
 
@@ -527,4 +561,3 @@ mod tests {
         assert!(func_b.is_some());
     }
 }
-

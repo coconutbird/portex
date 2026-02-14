@@ -183,7 +183,11 @@ impl TlsInfo {
     where
         F: Fn(u32, usize) -> Option<Vec<u8>>,
     {
-        let dir_size = if is_64bit { TlsDirectory64::SIZE } else { TlsDirectory32::SIZE };
+        let dir_size = if is_64bit {
+            TlsDirectory64::SIZE
+        } else {
+            TlsDirectory32::SIZE
+        };
         let data = read_at_rva(tls_rva, dir_size).ok_or(Error::InvalidRva(tls_rva))?;
         let directory = TlsDirectory::parse(&data, is_64bit)?;
 
@@ -205,11 +209,18 @@ impl TlsInfo {
 
                     let callback_va = if is_64bit {
                         u64::from_le_bytes([
-                            ptr_data[0], ptr_data[1], ptr_data[2], ptr_data[3],
-                            ptr_data[4], ptr_data[5], ptr_data[6], ptr_data[7],
+                            ptr_data[0],
+                            ptr_data[1],
+                            ptr_data[2],
+                            ptr_data[3],
+                            ptr_data[4],
+                            ptr_data[5],
+                            ptr_data[6],
+                            ptr_data[7],
                         ])
                     } else {
-                        u32::from_le_bytes([ptr_data[0], ptr_data[1], ptr_data[2], ptr_data[3]]) as u64
+                        u32::from_le_bytes([ptr_data[0], ptr_data[1], ptr_data[2], ptr_data[3]])
+                            as u64
                     };
 
                     // Null terminator
@@ -279,4 +290,3 @@ mod tests {
         assert_eq!(original, parsed);
     }
 }
-
