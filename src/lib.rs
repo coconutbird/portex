@@ -85,7 +85,9 @@ pub use delay_import::{
     DelayImportBuilder, DelayImportDirectory, DelayImportThunk, DelayLoadDescriptor, DelayLoadedDll,
 };
 pub use error::{Error, Result};
-pub use exception::{ExceptionDirectory, RuntimeFunction, UnwindCode, UnwindInfo, UnwindOpCode};
+pub use exception::{
+    ExceptionBuilder, ExceptionDirectory, RuntimeFunction, UnwindCode, UnwindInfo, UnwindOpCode,
+};
 pub use export::{
     ExportAddress, ExportDirectory, ExportTable, ExportTableBuilder, ExportedFunction,
 };

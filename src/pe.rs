@@ -1008,6 +1008,60 @@ impl PE {
         }
     }
 
+    /// Update the exception directory (.pdata).
+    ///
+    /// Creates or replaces the exception directory with new function entries.
+    /// If target_section is None, uses ".pdata" or ".rdata" or the last section.
+    ///
+    /// # Arguments
+    /// * `directory` - The exception directory to write
+    /// * `target_section` - Optional section to place the exception data
+    ///
+    /// Returns the RVA where the exception directory was written.
+    pub fn update_exception(
+        &mut self,
+        directory: &crate::exception::ExceptionDirectory,
+        target_section: Option<&str>,
+    ) -> Result<u32> {
+        use crate::data_dir::DataDirectoryType;
+        use crate::exception::ExceptionBuilder;
+
+        // Find target section
+        let section_name: String = target_section
+            .map(|s| s.to_string())
+            .or_else(|| {
+                if self.section_by_name(".pdata").is_some() {
+                    Some(".pdata".to_string())
+                } else if self.section_by_name(".rdata").is_some() {
+                    Some(".rdata".to_string())
+                } else {
+                    self.sections.last().map(|s| s.name().to_string())
+                }
+            })
+            .unwrap_or_else(|| ".pdata".to_string());
+
+        let section_idx = self.sections.iter().position(|s| s.name() == section_name);
+        let section_idx = match section_idx {
+            Some(idx) => idx,
+            None => return Err(crate::Error::invalid_section(&section_name)),
+        };
+
+        // Build exception data
+        let (data, dir_size) = ExceptionBuilder::build_from(directory);
+
+        // Calculate append RVA
+        let section = &self.sections[section_idx];
+        let append_rva = section.header.virtual_address + section.header.virtual_size;
+
+        // Append data to section
+        self.sections[section_idx].append_data(&data);
+
+        self.update_layout();
+        self.set_data_directory(DataDirectoryType::Exception, append_rva, dir_size);
+
+        Ok(append_rva)
+    }
+
     /// Parse the load config directory.
     pub fn load_config(&self) -> Result<Option<crate::loadconfig::LoadConfigDirectory>> {
         use crate::data_dir::DataDirectoryType;

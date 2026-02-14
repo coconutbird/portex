@@ -345,6 +345,91 @@ impl ExceptionDirectory {
     }
 }
 
+/// Builder for exception directories (.pdata).
+///
+/// Exception directories contain runtime function entries for x64 SEH.
+/// This builder helps create and manage these entries.
+///
+/// # Example
+///
+/// ```
+/// use portex::exception::ExceptionBuilder;
+///
+/// let mut builder = ExceptionBuilder::new();
+///
+/// // Add functions with their unwind info RVAs
+/// builder.add_function(0x1000, 0x1100, 0x3000);
+/// builder.add_function(0x1200, 0x1400, 0x3100);
+///
+/// let (data, size) = builder.build();
+/// assert_eq!(size, 24); // 2 functions * 12 bytes each
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct ExceptionBuilder {
+    /// The exception directory being built.
+    directory: ExceptionDirectory,
+}
+
+impl ExceptionBuilder {
+    /// Create a new exception builder.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create from an existing exception directory.
+    pub fn from_directory(directory: ExceptionDirectory) -> Self {
+        Self { directory }
+    }
+
+    /// Add a runtime function entry.
+    ///
+    /// # Arguments
+    /// * `begin_rva` - RVA of the function start
+    /// * `end_rva` - RVA of the function end
+    /// * `unwind_info_rva` - RVA of the unwind information
+    pub fn add_function(&mut self, begin_rva: u32, end_rva: u32, unwind_info_rva: u32) -> &mut Self {
+        self.directory.add_function(begin_rva, end_rva, unwind_info_rva);
+        self
+    }
+
+    /// Build the exception directory.
+    ///
+    /// Returns (data, size) where:
+    /// - `data` is the raw bytes to write to the section
+    /// - `size` is the total size of the exception directory
+    pub fn build(&mut self) -> (Vec<u8>, u32) {
+        // Sort by begin address (required for binary search)
+        self.directory.sort();
+        let data = self.directory.to_bytes();
+        let size = data.len() as u32;
+        (data, size)
+    }
+
+    /// Build from the existing directory without modification.
+    pub fn build_from(directory: &ExceptionDirectory) -> (Vec<u8>, u32) {
+        let mut dir = directory.clone();
+        dir.sort();
+        let data = dir.to_bytes();
+        let size = data.len() as u32;
+        (data, size)
+    }
+
+    /// Get the number of functions.
+    pub fn len(&self) -> usize {
+        self.directory.len()
+    }
+
+    /// Check if empty.
+    pub fn is_empty(&self) -> bool {
+        self.directory.is_empty()
+    }
+
+    /// Calculate the size needed for the exception directory.
+    pub fn calculate_size(num_functions: usize) -> usize {
+        num_functions * RuntimeFunction::SIZE
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
