@@ -3,8 +3,12 @@
 //! These tests perform roundtrip operations: create/parse → modify → rebuild → re-parse.
 
 use portex::{
-    ExceptionDirectory, ExportTable, ImportTable, ImportThunk, MachineType, PE, PEBuilder,
-    RelocationTable, RelocationType, Subsystem,
+    debug::CodeViewRsds,
+    loadconfig::{LoadConfigDirectory, LoadConfigDirectory64},
+    section::characteristics,
+    tls::TlsInfo,
+    ExceptionDirectory, ExportTable, ImportTable, ImportThunk, MachineType, PEBuilder,
+    RelocationTable, RelocationType, Subsystem, PE,
 };
 
 /// Test that PEBuilder creates a valid PE that can be parsed back.
@@ -15,8 +19,16 @@ fn test_pe_builder_roundtrip() {
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
         .entry_point(0x1000)
-        .add_section(".text", vec![0xCC; 0x200], 0x60000020) // CODE | EXECUTE | READ
-        .add_section(".data", vec![0x00; 0x100], 0xC0000040) // INITIALIZED_DATA | READ | WRITE
+        .add_section(
+            ".text",
+            vec![0xCC; 0x200],
+            characteristics::CODE | characteristics::EXECUTE | characteristics::READ,
+        ) // CODE | EXECUTE | READ
+        .add_section(
+            ".data",
+            vec![0x00; 0x100],
+            characteristics::INITIALIZED_DATA | characteristics::READ | characteristics::WRITE,
+        ) // INITIALIZED_DATA | READ | WRITE
         .build();
 
     // Re-parse the built PE
@@ -181,8 +193,6 @@ fn test_exception_roundtrip() {
 /// Test TLS directory roundtrip.
 #[test]
 fn test_tls_roundtrip() {
-    use portex::tls::TlsInfo;
-
     let mut pe = PEBuilder::new()
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
@@ -208,8 +218,6 @@ fn test_tls_roundtrip() {
 /// Test debug directory roundtrip.
 #[test]
 fn test_debug_roundtrip() {
-    use portex::debug::CodeViewRsds;
-
     let mut pe = PEBuilder::new()
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
@@ -241,8 +249,6 @@ fn test_debug_roundtrip() {
 /// Test LoadConfig roundtrip.
 #[test]
 fn test_loadconfig_roundtrip() {
-    use portex::loadconfig::{LoadConfigDirectory, LoadConfigDirectory64};
-
     let mut pe = PEBuilder::new()
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
