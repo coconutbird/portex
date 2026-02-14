@@ -214,116 +214,180 @@ impl PE {
         }
     }
 
-    /// Set the import table by building a new .idata section.
-    /// This will create or replace the existing import section.
-    pub fn set_imports(&mut self, imports: crate::import::ImportTable) {
-        use crate::data_dir::index::{IMPORT, IAT};
-        use crate::import::ImportTableBuilder;
-        use crate::section::characteristics::{READ, INITIALIZED_DATA};
-
-        if imports.is_empty() {
-            // Remove import section and clear data directories
-            self.remove_section(".idata");
-            let dirs = self.optional_header.data_directories_mut();
-            if let Some(dir) = dirs.get_mut(IMPORT) {
-                dir.virtual_address = 0;
-                dir.size = 0;
-            }
-            if let Some(dir) = dirs.get_mut(IAT) {
-                dir.virtual_address = 0;
-                dir.size = 0;
-            }
-            return;
-        }
-
-        // Remove old import section if exists
-        self.remove_section(".idata");
-
-        // We need to know where the section will be placed
-        // First, update layout to get current state
-        self.update_layout();
-
-        // Calculate where the new section will be placed
-        let config = LayoutConfig::from_optional_header(&self.optional_header);
-        let last_section_rva_end = self.sections.last()
-            .map(|s| s.header.virtual_address + s.header.virtual_size)
-            .unwrap_or(config.section_alignment);
-        let new_section_rva = config.align_section(last_section_rva_end);
-
-        // Build the import section
-        let builder = ImportTableBuilder::new(self.is_64bit(), new_section_rva);
-        let (section_data, iat_rva, iat_size) = builder.build(&imports);
-
-        // Create the section
-        let mut section = Section::new(".idata", READ | INITIALIZED_DATA);
-        section.set_data(section_data);
-
-        // Add the section
-        self.add_section(section);
-
-        // Update data directories (after add_section updates layout)
-        let import_rva = new_section_rva;
-        let import_size = (imports.dlls.len() + 1) as u32 * crate::import::ImportDescriptor::SIZE as u32;
-
+    /// Update a data directory entry.
+    pub fn set_data_directory(&mut self, index: usize, rva: u32, size: u32) {
         let dirs = self.optional_header.data_directories_mut();
-        if let Some(dir) = dirs.get_mut(IMPORT) {
-            dir.virtual_address = import_rva;
-            dir.size = import_size;
-        }
-        if let Some(dir) = dirs.get_mut(IAT) {
-            dir.virtual_address = iat_rva;
-            dir.size = iat_size;
+        if let Some(dir) = dirs.get_mut(index) {
+            dir.virtual_address = rva;
+            dir.size = size;
         }
     }
 
-    /// Set the export table by building a new .edata section.
-    /// This will create or replace the existing export section.
-    pub fn set_exports(&mut self, exports: crate::export::ExportTable) {
+    /// Clear a data directory entry.
+    pub fn clear_data_directory(&mut self, index: usize) {
+        self.set_data_directory(index, 0, 0);
+    }
+
+    /// Append data to a section and return the RVA where it was placed.
+    /// Returns None if the section doesn't exist.
+    pub fn append_to_section(&mut self, section_name: &str, data: &[u8]) -> Option<u32> {
+        let section = self.sections.iter_mut().find(|s| s.name() == section_name)?;
+        let rva = section.header.virtual_address + section.header.virtual_size;
+        section.append_data(data);
+        Some(rva)
+    }
+
+    /// Update imports: tries in-place replacement first, otherwise appends to target section.
+    /// If target_section is None, appends to ".rdata" or the last section.
+    /// Returns the import RVA on success.
+    pub fn update_imports(
+        &mut self,
+        imports: crate::import::ImportTable,
+        target_section: Option<&str>,
+    ) -> Result<u32> {
+        use crate::data_dir::index::{IMPORT, IAT};
+        use crate::import::ImportTableBuilder;
+
+        if imports.is_empty() {
+            self.clear_data_directory(IMPORT);
+            self.clear_data_directory(IAT);
+            return Ok(0);
+        }
+
+        // Calculate required size
+        let builder_temp = ImportTableBuilder::new(self.is_64bit(), 0);
+        let required_size = builder_temp.calculate_size(&imports);
+
+        // Check if we can replace in-place
+        let existing_dir = self.data_directory(IMPORT).cloned();
+        if let Some(dir) = existing_dir {
+            if dir.is_present() && dir.size as usize >= required_size {
+                // Can replace in-place
+                let builder = ImportTableBuilder::new(self.is_64bit(), dir.virtual_address);
+                let (data, iat_rva, iat_size) = builder.build(&imports);
+
+                if self.write_at_rva(dir.virtual_address, &data).is_some() {
+                    let import_size = (imports.dlls.len() + 1) as u32
+                        * crate::import::ImportDescriptor::SIZE as u32;
+                    self.set_data_directory(IMPORT, dir.virtual_address, import_size);
+                    self.set_data_directory(IAT, iat_rva, iat_size);
+                    return Ok(dir.virtual_address);
+                }
+            }
+        }
+
+        // Find target section to append to (owned to avoid borrow issues)
+        let section_name: String = target_section
+            .map(|s| s.to_string())
+            .or_else(|| {
+                if self.section_by_name(".rdata").is_some() {
+                    Some(".rdata".to_string())
+                } else {
+                    self.sections.last().map(|s| s.name().to_string())
+                }
+            })
+            .unwrap_or_else(|| ".rdata".to_string());
+
+        // Find section index (needed to avoid borrow issues)
+        let section_idx = self.sections.iter().position(|s| s.name() == section_name);
+        let section_idx = match section_idx {
+            Some(idx) => idx,
+            None => return Err(crate::Error::InvalidSection(section_name)),
+        };
+
+        // Calculate RVA where data will be placed
+        let append_rva = {
+            let section = &self.sections[section_idx];
+            section.header.virtual_address + section.header.virtual_size
+        };
+
+        // Build import data at the append RVA
+        let builder = ImportTableBuilder::new(self.is_64bit(), append_rva);
+        let (data, iat_rva, iat_size) = builder.build(&imports);
+
+        // Append to section
+        self.sections[section_idx].append_data(&data);
+
+        // Update data directories
+        let import_size = (imports.dlls.len() + 1) as u32
+            * crate::import::ImportDescriptor::SIZE as u32;
+        self.set_data_directory(IMPORT, append_rva, import_size);
+        self.set_data_directory(IAT, iat_rva, iat_size);
+
+        Ok(append_rva)
+    }
+
+    /// Update exports: tries in-place replacement first, otherwise appends to target section.
+    /// If target_section is None, appends to ".rdata" or the last section.
+    /// Returns the export RVA on success.
+    pub fn update_exports(
+        &mut self,
+        exports: crate::export::ExportTable,
+        target_section: Option<&str>,
+    ) -> Result<u32> {
         use crate::data_dir::index::EXPORT;
         use crate::export::ExportTableBuilder;
-        use crate::section::characteristics::{READ, INITIALIZED_DATA};
 
         if exports.is_empty() && exports.dll_name.is_empty() {
-            // Remove export section and clear data directory
-            self.remove_section(".edata");
-            let dirs = self.optional_header.data_directories_mut();
-            if let Some(dir) = dirs.get_mut(EXPORT) {
-                dir.virtual_address = 0;
-                dir.size = 0;
-            }
-            return;
+            self.clear_data_directory(EXPORT);
+            return Ok(0);
         }
 
-        // Remove old export section if exists
-        self.remove_section(".edata");
+        // Calculate required size
+        let builder_temp = ExportTableBuilder::new(0);
+        let required_size = builder_temp.calculate_size(&exports);
 
-        // Update layout to get current state
-        self.update_layout();
+        // Check if we can replace in-place
+        let existing_dir = self.data_directory(EXPORT).cloned();
+        if let Some(dir) = existing_dir {
+            if dir.is_present() && dir.size as usize >= required_size {
+                // Can replace in-place
+                let builder = ExportTableBuilder::new(dir.virtual_address);
+                let (data, export_size) = builder.build(&exports);
 
-        // Calculate where the new section will be placed
-        let config = LayoutConfig::from_optional_header(&self.optional_header);
-        let last_section_rva_end = self.sections.last()
-            .map(|s| s.header.virtual_address + s.header.virtual_size)
-            .unwrap_or(config.section_alignment);
-        let new_section_rva = config.align_section(last_section_rva_end);
+                if self.write_at_rva(dir.virtual_address, &data).is_some() {
+                    self.set_data_directory(EXPORT, dir.virtual_address, export_size);
+                    return Ok(dir.virtual_address);
+                }
+            }
+        }
 
-        // Build the export section
-        let builder = ExportTableBuilder::new(new_section_rva);
-        let (section_data, export_size) = builder.build(&exports);
+        // Find target section to append to (owned to avoid borrow issues)
+        let section_name: String = target_section
+            .map(|s| s.to_string())
+            .or_else(|| {
+                if self.section_by_name(".rdata").is_some() {
+                    Some(".rdata".to_string())
+                } else {
+                    self.sections.last().map(|s| s.name().to_string())
+                }
+            })
+            .unwrap_or_else(|| ".rdata".to_string());
 
-        // Create the section
-        let mut section = Section::new(".edata", READ | INITIALIZED_DATA);
-        section.set_data(section_data);
+        // Find section index (needed to avoid borrow issues)
+        let section_idx = self.sections.iter().position(|s| s.name() == section_name);
+        let section_idx = match section_idx {
+            Some(idx) => idx,
+            None => return Err(crate::Error::InvalidSection(section_name)),
+        };
 
-        // Add the section
-        self.add_section(section);
+        // Calculate RVA where data will be placed
+        let append_rva = {
+            let section = &self.sections[section_idx];
+            section.header.virtual_address + section.header.virtual_size
+        };
+
+        // Build export data at the append RVA
+        let builder = ExportTableBuilder::new(append_rva);
+        let (data, export_size) = builder.build(&exports);
+
+        // Append to section
+        self.sections[section_idx].append_data(&data);
 
         // Update data directory
-        let dirs = self.optional_header.data_directories_mut();
-        if let Some(dir) = dirs.get_mut(EXPORT) {
-            dir.virtual_address = new_section_rva;
-            dir.size = export_size;
-        }
+        self.set_data_directory(EXPORT, append_rva, export_size);
+
+        Ok(append_rva)
     }
 
     /// Recalculate layout (section RVAs, file offsets, sizes).
