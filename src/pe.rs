@@ -1501,6 +1501,62 @@ impl PE {
         }
     }
 
+    /// Rebuild all data directories in place.
+    ///
+    /// This method re-parses and re-serializes all supported data directories:
+    /// - Imports
+    /// - Exports
+    /// - Relocations
+    /// - Resources
+    /// - Bound Imports
+    /// - Delay Imports
+    ///
+    /// This is useful after making structural changes to sections to ensure all
+    /// data directory content is properly aligned and laid out.
+    ///
+    /// Does NOT touch Security (Authenticode) or other directories not listed above.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any data directory fails to parse or rebuild.
+    pub fn rebuild_all(&mut self, target_section: Option<&str>) -> Result<()> {
+        // Parse all directories first before modifying anything
+        let imports = self.imports()?;
+        let exports = self.exports()?;
+        let relocations = self.relocations()?;
+        let resources = self.resources_with_data()?;
+        let bound_imports = self.bound_imports()?;
+        let delay_imports = self.delay_imports()?;
+
+        // Rebuild each one (only if non-empty)
+        if !imports.is_empty() {
+            self.update_imports(imports, target_section)?;
+        }
+        if !exports.is_empty() {
+            self.update_exports(exports, target_section)?;
+        }
+        if !relocations.is_empty() {
+            self.update_relocations(relocations, target_section)?;
+        }
+        if !resources.resources.is_empty() {
+            self.update_resources(&resources, target_section)?;
+        }
+        if let Some(bound) = bound_imports {
+            if !bound.descriptors.is_empty() {
+                self.update_bound_imports(bound, target_section)?;
+            }
+        }
+        if !delay_imports.dlls.is_empty() {
+            self.update_delay_imports(&delay_imports, target_section)?;
+        }
+
+        // Update layout and checksum
+        self.update_layout();
+        self.update_checksum();
+
+        Ok(())
+    }
+
     /// Read resource data at the given RVA.
     pub fn read_resource_data(&self, resource: &crate::resource::Resource) -> Option<Vec<u8>> {
         self.read_at_rva(resource.data_rva, resource.size as usize)
