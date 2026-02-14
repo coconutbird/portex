@@ -1816,10 +1816,10 @@ impl PE {
         if !resources.resources.is_empty() {
             self.update_resources(&resources, target_section)?;
         }
-        if let Some(bound) = bound_imports {
-            if !bound.descriptors.is_empty() {
-                self.update_bound_imports(bound, target_section)?;
-            }
+        if let Some(bound) = bound_imports
+            && !bound.descriptors.is_empty()
+        {
+            self.update_bound_imports(bound, target_section)?;
         }
         if !delay_imports.dlls.is_empty() {
             self.update_delay_imports(&delay_imports, target_section)?;

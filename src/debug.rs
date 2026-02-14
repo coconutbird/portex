@@ -320,11 +320,13 @@ impl DebugBuilder {
         let cv_data = codeview.to_bytes();
         let cv_offset = DebugDirectory::SIZE as u32;
 
-        let mut dir = DebugDirectory::default();
-        dir.debug_type = DebugType::CodeView as u32;
-        dir.size_of_data = cv_data.len() as u32;
-        dir.address_of_raw_data = self.base_rva + cv_offset;
-        dir.pointer_to_raw_data = 0; // Caller must update after section layout
+        let dir = DebugDirectory {
+            debug_type: DebugType::CodeView as u32,
+            size_of_data: cv_data.len() as u32,
+            address_of_raw_data: self.base_rva + cv_offset,
+            pointer_to_raw_data: 0, // Caller must update after section layout
+            ..Default::default()
+        };
 
         let mut data = Vec::with_capacity(DebugDirectory::SIZE + cv_data.len());
         data.extend_from_slice(&dir.to_bytes());
