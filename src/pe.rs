@@ -238,7 +238,7 @@ impl PE {
     }
 
     /// Update imports: tries in-place replacement first, otherwise appends to target section.
-    /// If target_section is None, appends to ".rdata" or the last section.
+    /// If target_section is None, uses the section containing existing imports, or ".rdata", or last section.
     /// Returns the import RVA on success.
     pub fn update_imports(
         &mut self,
@@ -260,7 +260,7 @@ impl PE {
 
         // Check if we can replace in-place
         let existing_dir = self.data_directory(IMPORT).cloned();
-        if let Some(dir) = existing_dir {
+        if let Some(ref dir) = existing_dir {
             if dir.is_present() && dir.size as usize >= required_size {
                 // Can replace in-place
                 let builder = ImportTableBuilder::new(self.is_64bit(), dir.virtual_address);
@@ -276,9 +276,24 @@ impl PE {
             }
         }
 
-        // Find target section to append to (owned to avoid borrow issues)
+        // Find target section to append to:
+        // 1. User-specified section
+        // 2. Section containing existing imports (if any)
+        // 3. .rdata
+        // 4. Last section
         let section_name: String = target_section
             .map(|s| s.to_string())
+            .or_else(|| {
+                // Try to find section containing existing import directory
+                if let Some(ref dir) = existing_dir {
+                    if dir.is_present() {
+                        if let Some(section) = self.section_by_rva(dir.virtual_address) {
+                            return Some(section.name().to_string());
+                        }
+                    }
+                }
+                None
+            })
             .or_else(|| {
                 if self.section_by_name(".rdata").is_some() {
                     Some(".rdata".to_string())
@@ -318,7 +333,7 @@ impl PE {
     }
 
     /// Update exports: tries in-place replacement first, otherwise appends to target section.
-    /// If target_section is None, appends to ".rdata" or the last section.
+    /// If target_section is None, uses the section containing existing exports, or ".rdata", or last section.
     /// Returns the export RVA on success.
     pub fn update_exports(
         &mut self,
@@ -339,7 +354,7 @@ impl PE {
 
         // Check if we can replace in-place
         let existing_dir = self.data_directory(EXPORT).cloned();
-        if let Some(dir) = existing_dir {
+        if let Some(ref dir) = existing_dir {
             if dir.is_present() && dir.size as usize >= required_size {
                 // Can replace in-place
                 let builder = ExportTableBuilder::new(dir.virtual_address);
@@ -352,9 +367,24 @@ impl PE {
             }
         }
 
-        // Find target section to append to (owned to avoid borrow issues)
+        // Find target section to append to:
+        // 1. User-specified section
+        // 2. Section containing existing exports (if any)
+        // 3. .rdata
+        // 4. Last section
         let section_name: String = target_section
             .map(|s| s.to_string())
+            .or_else(|| {
+                // Try to find section containing existing export directory
+                if let Some(ref dir) = existing_dir {
+                    if dir.is_present() {
+                        if let Some(section) = self.section_by_rva(dir.virtual_address) {
+                            return Some(section.name().to_string());
+                        }
+                    }
+                }
+                None
+            })
             .or_else(|| {
                 if self.section_by_name(".rdata").is_some() {
                     Some(".rdata".to_string())
