@@ -155,6 +155,59 @@ impl CliHeader {
     pub fn has_native_entry_point(&self) -> bool {
         self.flags & Self::FLAG_NATIVE_ENTRYPOINT != 0
     }
+
+    /// Serialize the CLI header to a 72-byte array.
+    pub fn to_bytes(&self) -> [u8; Self::SIZE] {
+        let mut data = [0u8; Self::SIZE];
+
+        data[0..4].copy_from_slice(&self.cb.to_le_bytes());
+        data[4..6].copy_from_slice(&self.major_runtime_version.to_le_bytes());
+        data[6..8].copy_from_slice(&self.minor_runtime_version.to_le_bytes());
+        data[8..12].copy_from_slice(&self.metadata_rva.to_le_bytes());
+        data[12..16].copy_from_slice(&self.metadata_size.to_le_bytes());
+        data[16..20].copy_from_slice(&self.flags.to_le_bytes());
+        data[20..24].copy_from_slice(&self.entry_point_token_or_rva.to_le_bytes());
+        data[24..28].copy_from_slice(&self.resources_rva.to_le_bytes());
+        data[28..32].copy_from_slice(&self.resources_size.to_le_bytes());
+        data[32..36].copy_from_slice(&self.strong_name_signature_rva.to_le_bytes());
+        data[36..40].copy_from_slice(&self.strong_name_signature_size.to_le_bytes());
+        data[40..44].copy_from_slice(&self.code_manager_table_rva.to_le_bytes());
+        data[44..48].copy_from_slice(&self.code_manager_table_size.to_le_bytes());
+        data[48..52].copy_from_slice(&self.vtable_fixups_rva.to_le_bytes());
+        data[52..56].copy_from_slice(&self.vtable_fixups_size.to_le_bytes());
+        data[56..60].copy_from_slice(&self.export_address_table_jumps_rva.to_le_bytes());
+        data[60..64].copy_from_slice(&self.export_address_table_jumps_size.to_le_bytes());
+        data[64..68].copy_from_slice(&self.managed_native_header_rva.to_le_bytes());
+        data[68..72].copy_from_slice(&self.managed_native_header_size.to_le_bytes());
+
+        data
+    }
+}
+
+impl Default for CliHeader {
+    fn default() -> Self {
+        Self {
+            cb: Self::SIZE as u32,
+            major_runtime_version: 2,
+            minor_runtime_version: 5,
+            metadata_rva: 0,
+            metadata_size: 0,
+            flags: 0,
+            entry_point_token_or_rva: 0,
+            resources_rva: 0,
+            resources_size: 0,
+            strong_name_signature_rva: 0,
+            strong_name_signature_size: 0,
+            code_manager_table_rva: 0,
+            code_manager_table_size: 0,
+            vtable_fixups_rva: 0,
+            vtable_fixups_size: 0,
+            export_address_table_jumps_rva: 0,
+            export_address_table_jumps_size: 0,
+            managed_native_header_rva: 0,
+            managed_native_header_size: 0,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -170,5 +223,43 @@ mod tests {
     fn test_cli_header_buffer_too_small() {
         let data = [0u8; 71];
         assert!(CliHeader::parse(&data).is_err());
+    }
+
+    #[test]
+    fn test_cli_header_roundtrip() {
+        let header = CliHeader {
+            cb: 72,
+            major_runtime_version: 2,
+            minor_runtime_version: 5,
+            metadata_rva: 0x2000,
+            metadata_size: 0x1234,
+            flags: CliHeader::FLAG_ILONLY | CliHeader::FLAG_STRONGNAMESIGNED,
+            entry_point_token_or_rva: 0x0600_0001,
+            resources_rva: 0x3000,
+            resources_size: 0x100,
+            strong_name_signature_rva: 0,
+            strong_name_signature_size: 0,
+            code_manager_table_rva: 0,
+            code_manager_table_size: 0,
+            vtable_fixups_rva: 0,
+            vtable_fixups_size: 0,
+            export_address_table_jumps_rva: 0,
+            export_address_table_jumps_size: 0,
+            managed_native_header_rva: 0,
+            managed_native_header_size: 0,
+        };
+
+        let bytes = header.to_bytes();
+        let parsed = CliHeader::parse(&bytes).unwrap();
+
+        assert_eq!(header, parsed);
+    }
+
+    #[test]
+    fn test_cli_header_default() {
+        let header = CliHeader::default();
+        assert_eq!(header.cb, 72);
+        assert_eq!(header.major_runtime_version, 2);
+        assert_eq!(header.minor_runtime_version, 5);
     }
 }
