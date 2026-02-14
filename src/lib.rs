@@ -76,6 +76,7 @@ pub use bound_import::{
 };
 pub use checksum::{calculate_checksum, checksum_field_offset, compute_pe_checksum};
 pub use clr::CliHeader;
+pub use coff::{CoffHeader, MachineType};
 pub use data_dir::{DataDirectory, DataDirectoryType};
 pub use debug::{CodeViewRsds, DebugDirectory, DebugInfo, DebugType};
 pub use delay_import::{
@@ -89,6 +90,7 @@ pub use export::{
 pub use import::{ImportDescriptor, ImportTable, ImportTableBuilder, ImportThunk, ImportedDll};
 pub use layout::LayoutConfig;
 pub use loadconfig::{LoadConfigDirectory, LoadConfigDirectory32, LoadConfigDirectory64};
+pub use optional::{OptionalHeader, OptionalHeader32, OptionalHeader64, Subsystem};
 pub use pe::{PE, PEHeaders};
 pub use reader::{BaseAddressReader, FileReader, Reader, SliceReader, VecReader};
 pub use reloc::{RelocationBlock, RelocationEntry, RelocationTable, RelocationType};

@@ -194,12 +194,7 @@ impl DelayImportDirectory {
             0x8000_0000
         };
 
-        loop {
-            let thunk_data = match read_fn(int_rva + thunk_offset, thunk_size) {
-                Some(d) => d,
-                None => break,
-            };
-
+        while let Some(thunk_data) = read_fn(int_rva + thunk_offset, thunk_size) {
             let thunk_value: u64 = if is_64bit {
                 u64::from_le_bytes([
                     thunk_data[0],

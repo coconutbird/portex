@@ -34,10 +34,9 @@ println!("64-bit: {}", pe.is_64bit());
 println!("Is DLL: {}", pe.is_dll());
 
 // Access imports
-if let Some(imports) = pe.imports() {
-    for dll in imports.dlls() {
-        println!("Imports from: {}", dll.name);
-    }
+let imports = pe.imports()?;
+for dll in &imports.dlls {
+    println!("Imports from: {}", dll.name);
 }
 
 // Or just load headers (efficient for large files)
@@ -59,19 +58,27 @@ println!("Entry point: {:#x}", headers.entry_point());
 | `exception` | Exception handling (x64 unwind info) |
 | `section` | Section headers and data |
 | `validation` | PE validation utilities |
+| `bound_import` | Bound import directory |
+| `delay_import` | Delay-load import directory |
+| `security` | Authenticode certificate directory |
+| `clr` | CLR/.NET runtime header |
+| `loadconfig` | Load configuration directory |
 
-## Building PEs
+## Modifying PEs
 
 ```rust
-use portex::{PE, MachineType, Subsystem};
-use portex::section::characteristics;
+use portex::PE;
 
-let pe = PE::builder()
-    .machine(MachineType::Amd64)
-    .subsystem(Subsystem::WindowsCui)
-    .add_section(".text", code, characteristics::CODE | characteristics::EXECUTE | characteristics::READ)
-    .add_section(".data", data, characteristics::INITIALIZED_DATA | characteristics::READ | characteristics::WRITE)
-    .build()?;
+// Parse, modify, and rebuild
+let mut pe = PE::from_file("example.exe")?;
+
+// Modify imports, exports, resources, etc.
+if let Some(imports) = pe.imports()? {
+    pe.update_imports(imports)?;
+}
+
+// Write back to disk
+std::fs::write("modified.exe", pe.build())?;
 ```
 
 ## Fuzzing
