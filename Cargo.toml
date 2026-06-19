@@ -1,6 +1,6 @@
 [package]
 name = "portex"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "A PE (Portable Executable) file reader/writer library"
 license = "MIT"
@@ -17,5 +17,3 @@ std = []
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
-# Pedantic is too strict for existing codebase - enable incrementally if desired
-# pedantic = { level = "warn", priority = -1 }
