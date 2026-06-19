@@ -145,6 +145,18 @@ pe.update_imports(imports, None)?;
 std::fs::write("modified.exe", pe.build())?;
 ```
 
+## Development
+
+Toolchain and pre-commit hooks are managed via [mise](https://mise.jdx.dev/). After cloning:
+
+```bash
+mise install               # installs the pinned Rust toolchain + prek
+mise run precommit-install # wires up .git/hooks (one-time)
+mise run precommit         # runs all hooks across the whole tree
+```
+
+The pre-commit config (`.pre-commit-config.yaml`) runs `cargo fmt`, `cargo check`, `cargo clippy` for both the default and `--no-default-features` feature sets, plus the usual whitespace/EOF/TOML/YAML hygiene hooks. Hooks are executed by [`prek`](https://github.com/j178/prek), a fast Rust reimplementation of the `pre-commit` framework — `mise install` brings it in automatically.
+
 ## Fuzzing
 
 Fuzz testing is set up using `cargo-fuzz` (requires Linux/macOS or WSL):
