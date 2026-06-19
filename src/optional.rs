@@ -1,6 +1,7 @@
 //! Optional Header structures and parsing.
 
 use crate::data_dir::DataDirectory;
+use crate::prelude::*;
 use crate::reader::Reader;
 use crate::{Error, Result};
 

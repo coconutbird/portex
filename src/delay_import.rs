@@ -19,6 +19,7 @@
 //! # Ok::<(), portex::Error>(())
 //! ```
 
+use crate::prelude::*;
 use crate::{Error, Result};
 
 /// IMAGE_DELAYLOAD_DESCRIPTOR structure.

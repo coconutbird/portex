@@ -1,8 +1,13 @@
 //! Reader trait and implementations for reading PE data from various sources.
 
+use crate::prelude::*;
 use crate::{Error, Result};
+
+#[cfg(feature = "std")]
 use std::fs::File;
+#[cfg(feature = "std")]
 use std::io::{Read, Seek, SeekFrom};
+#[cfg(feature = "std")]
 use std::path::Path;
 
 /// Trait for reading bytes from a source (file, memory, remote process, etc.).
@@ -144,11 +149,13 @@ impl Reader for VecReader {
 /// Note: `FileReader` uses `RefCell` internally and is therefore `!Sync`.
 /// It can be used from a single thread but not shared across threads.
 /// For multi-threaded scenarios, consider reading the file into a `VecReader`.
+#[cfg(feature = "std")]
 pub struct FileReader {
     file: std::cell::RefCell<File>,
     size: u64,
 }
 
+#[cfg(feature = "std")]
 impl std::fmt::Debug for FileReader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FileReader")
@@ -157,6 +164,7 @@ impl std::fmt::Debug for FileReader {
     }
 }
 
+#[cfg(feature = "std")]
 impl FileReader {
     /// Open a file for reading.
     #[must_use = "opening a file may fail"]
@@ -176,6 +184,7 @@ impl FileReader {
     }
 }
 
+#[cfg(feature = "std")]
 impl Reader for FileReader {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
         let mut file = self.file.borrow_mut();
@@ -224,12 +233,12 @@ impl Reader for BaseAddressReader {
             let available = size - offset;
             let to_read = buf.len().min(available);
             unsafe {
-                std::ptr::copy_nonoverlapping(self.base.add(offset), buf.as_mut_ptr(), to_read);
+                core::ptr::copy_nonoverlapping(self.base.add(offset), buf.as_mut_ptr(), to_read);
             }
             return Ok(to_read);
         }
         unsafe {
-            std::ptr::copy_nonoverlapping(self.base.add(offset), buf.as_mut_ptr(), buf.len());
+            core::ptr::copy_nonoverlapping(self.base.add(offset), buf.as_mut_ptr(), buf.len());
         }
         Ok(buf.len())
     }

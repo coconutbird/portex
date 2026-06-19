@@ -9,6 +9,10 @@ readme = "README.md"
 keywords = ["pe", "portable-executable", "windows", "exe", "dll"]
 categories = ["parsing", "development-tools"]
 
+[features]
+default = ["std"]
+std = []
+
 [dependencies]
 
 [lints.clippy]

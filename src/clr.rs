@@ -23,6 +23,7 @@
 //! # Ok::<(), portex::Error>(())
 //! ```
 
+use crate::prelude::*;
 use crate::{Error, Result};
 
 /// CLI header (IMAGE_COR20_HEADER).

@@ -25,6 +25,7 @@ use crate::optional::{
     OptionalHeader, OptionalHeader32, OptionalHeader64, PE32_MAGIC, PE32PLUS_MAGIC, Subsystem,
 };
 use crate::pe::PE;
+use crate::prelude::*;
 use crate::section::{Section, SectionHeader};
 
 /// Builder for creating new PE files from scratch.

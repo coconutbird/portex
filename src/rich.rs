@@ -3,6 +3,8 @@
 //! The Rich Header is an undocumented structure inserted by Microsoft linker
 //! between the DOS stub and PE signature. It contains build tool information.
 
+use crate::prelude::*;
+
 /// Rich header magic value ("Rich" XORed with key).
 const RICH_MAGIC: u32 = 0x68636952; // "Rich"
 

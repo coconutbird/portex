@@ -50,6 +50,7 @@
 //! # Ok::<(), portex::Error>(())
 //! ```
 
+use crate::prelude::*;
 use crate::{Error, Result};
 
 /// Relocation types.

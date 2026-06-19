@@ -12,6 +12,12 @@
 //! - **Partial loading**: Use `PEHeaders` to parse just headers without loading
 //!   the entire file - ideal for remote process scenarios.
 //! - **Self-contained**: All PE structures defined from scratch, no Windows SDK.
+//! - **`no_std` mode**: Disable the `std` feature for `no_std + alloc` builds.
+//!   The full PE API (parsers, builders, layout, validation, in-memory readers)
+//!   stays available. Only entry points that genuinely need `std` —
+//!   `PE::from_file`, `PE::write_to_file`, `PEHeaders::from_file`, the
+//!   `FileReader`, and the `std::error::Error` / `From<io::Error>` impls —
+//!   compile out.
 //!
 //! ## Architecture
 //!
@@ -45,6 +51,27 @@
 //! let headers = PEHeaders::from_file("example.dll").unwrap();
 //! println!("Entry point: {:#x}", headers.entry_point());
 //! ```
+
+#![cfg_attr(not(feature = "std"), no_std)]
+extern crate alloc;
+
+#[cfg(feature = "std")]
+extern crate std;
+
+/// Internal prelude — every source file does `use crate::prelude::*;` to pull
+/// in the `alloc` types and macros the codebase relies on. Re-exporting them
+/// here keeps each module file's import header to a single line and centralises
+/// the `no_std`-aware imports so individual modules don't repeat `#[cfg]`
+/// blocks. The items are all `alloc` re-exports, so under the `std` feature
+/// they shadow identical-typed prelude items harmlessly.
+pub(crate) mod prelude {
+    pub use alloc::borrow::Cow;
+    pub use alloc::collections::BTreeMap;
+    pub use alloc::format;
+    pub use alloc::string::{String, ToString};
+    pub use alloc::vec;
+    pub use alloc::vec::Vec;
+}
 
 pub mod bound_import;
 pub mod builder;
@@ -98,7 +125,9 @@ pub use loadconfig::{
 };
 pub use optional::{OptionalHeader, OptionalHeader32, OptionalHeader64, Subsystem};
 pub use pe::{PE, PEHeaders};
-pub use reader::{BaseAddressReader, FileReader, Reader, SliceReader, VecReader};
+#[cfg(feature = "std")]
+pub use reader::FileReader;
+pub use reader::{BaseAddressReader, Reader, SliceReader, VecReader};
 pub use reloc::{
     RelocationBlock, RelocationBuilder, RelocationEntry, RelocationTable, RelocationType,
 };
