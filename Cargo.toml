@@ -2,7 +2,7 @@
 name = "portex"
 version = "0.2.0"
 edition = "2024"
-description = "A PE (Portable Executable) file reader/writer library"
+description = "A self-contained, no_std-friendly PE (Portable Executable) file reader/writer library"
 license = "MIT"
 repository = "https://github.com/coconutbird/portex"
 readme = "README.md"
