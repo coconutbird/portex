@@ -8,4 +8,3 @@ fuzz_target!(|data: &[u8]| {
     // This should never panic, only return errors for invalid input
     let _ = PEHeaders::read_from(data);
 });
-

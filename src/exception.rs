@@ -3,6 +3,7 @@
 //! The exception directory contains runtime function entries used for
 //! structured exception handling (SEH) and stack unwinding on x64.
 
+use crate::prelude::*;
 use crate::{Error, Result};
 
 /// RUNTIME_FUNCTION entry for x64 (12 bytes).

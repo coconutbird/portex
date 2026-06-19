@@ -25,6 +25,7 @@
 //! # Ok::<(), portex::Error>(())
 //! ```
 
+use crate::prelude::*;
 use crate::{Error, Result};
 
 /// Debug types (IMAGE_DEBUG_TYPE_*).

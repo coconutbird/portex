@@ -20,6 +20,7 @@
 //! # Ok::<(), portex::Error>(())
 //! ```
 
+use crate::prelude::*;
 use crate::{Error, Result};
 
 /// WIN_CERTIFICATE revision values.

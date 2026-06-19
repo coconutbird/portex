@@ -8,6 +8,7 @@ A self-contained PE (Portable Executable) file reader/writer library for Rust.
 ## Features
 
 - **Zero dependencies** - All PE structures defined from scratch, no Windows SDK required
+- **`no_std` support** - Disable the default `std` feature to build `no_std + alloc`; bare-metal targets (UEFI loaders, kernels, embedded reverse-engineering tools) keep the full parser/builder/validation API
 - **Multiple loading modes** - Load from files, memory slices, or custom sources via the `Reader` trait
 - **Partial loading** - Use `PEHeaders` for lightweight header-only parsing
 - **Full PE support** - Imports, exports, resources, relocations, TLS, debug info, exceptions, and more
@@ -20,8 +21,26 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-portex = "0.1"
+portex = "0.2"
 ```
+
+For `no_std + alloc` consumers (UEFI loaders, kernels, etc.), disable the default `std` feature:
+
+```toml
+[dependencies]
+portex = { version = "0.2", default-features = false }
+```
+
+### Feature flags
+
+- **`std`** _(default on)_ — file-IO and `std::io` interop. Disable to build `no_std + alloc`. Gated items:
+  - `PE::from_file`, `PE::write_to_file`
+  - `PEHeaders::from_file`
+  - `FileReader` (struct + `Reader` impl)
+  - `ErrorKind::Io(io::Error)` variant
+  - `From<io::Error>` and `std::error::Error` impls on `Error`
+
+Without `std`, the crate is `no_std + alloc`. Parsers, builders, validation, in-memory `Reader` implementations (`SliceReader`, `VecReader`, `BaseAddressReader`), `RelocationTable::apply`, and the rest of the PE API stay available — bring your own bytes via `&[u8]`, a custom `Reader`, or an RVA-resolving closure passed to the directory parsers.
 
 ## Quick Start
 
@@ -44,25 +63,53 @@ let headers = PEHeaders::from_file("example.dll")?;
 println!("Entry point: {:#x}", headers.entry_point());
 ```
 
+### `no_std` quick start
+
+When `std` is disabled, you bring the bytes yourself — either as a `&[u8]` you already have in memory, or via a closure that reads at an RVA. Headers parse from a slice; directory walkers (relocations, imports, exports, resources, …) take an RVA-resolving closure so you can bridge whatever "where the image lives" abstraction you have (a remote-process handle, a hypervisor view of guest memory, a UEFI-loaded image).
+
+```rust
+use portex::{DataDirectoryType, PEHeaders, RelocationTable};
+
+// `image` points at a PE laid out in memory (sections at their RVAs).
+let headers = PEHeaders::from_slice(image)?;
+let dir = headers
+    .optional_header
+    .data_directories()
+    .get(DataDirectoryType::BaseReloc.as_index())
+    .copied()
+    .filter(|d| d.virtual_address != 0 && d.size != 0);
+
+if let Some(dir) = dir {
+    // For an in-memory image, RVA == offset from `image_base`.
+    let read_at_rva = |rva: u32, len: usize| -> Option<Vec<u8>> {
+        let r = rva as usize;
+        let end = r.checked_add(len)?;
+        (end <= image.len()).then(|| image[r..end].to_vec())
+    };
+    let table = RelocationTable::parse(dir.virtual_address, dir.size, read_at_rva)?;
+    table.apply(image_mut, delta, /* is_64bit */ true);
+}
+```
+
 ## Modules
 
-| Module | Description |
-|--------|-------------|
-| `pe` | Main `PE` and `PEHeaders` types |
-| `import` | Import table parsing and building |
-| `export` | Export table parsing and building |
-| `resource` | Resource directory parsing and building |
-| `reloc` | Base relocations |
-| `tls` | Thread Local Storage |
-| `debug` | Debug directory and CodeView info |
-| `exception` | Exception handling (x64 unwind info) |
-| `section` | Section headers and data |
-| `validation` | PE validation utilities |
-| `bound_import` | Bound import directory |
-| `delay_import` | Delay-load import directory |
-| `security` | Authenticode certificate directory |
-| `clr` | CLR/.NET runtime header |
-| `loadconfig` | Load configuration directory |
+| Module         | Description                             |
+| -------------- | --------------------------------------- |
+| `pe`           | Main `PE` and `PEHeaders` types         |
+| `import`       | Import table parsing and building       |
+| `export`       | Export table parsing and building       |
+| `resource`     | Resource directory parsing and building |
+| `reloc`        | Base relocations                        |
+| `tls`          | Thread Local Storage                    |
+| `debug`        | Debug directory and CodeView info       |
+| `exception`    | Exception handling (x64 unwind info)    |
+| `section`      | Section headers and data                |
+| `validation`   | PE validation utilities                 |
+| `bound_import` | Bound import directory                  |
+| `delay_import` | Delay-load import directory             |
+| `security`     | Authenticode certificate directory      |
+| `clr`          | CLR/.NET runtime header                 |
+| `loadconfig`   | Load configuration directory            |
 
 ## Building PEs from Scratch
 
@@ -98,6 +145,18 @@ pe.update_imports(imports, None)?;
 std::fs::write("modified.exe", pe.build())?;
 ```
 
+## Development
+
+Toolchain and pre-commit hooks are managed via [mise](https://mise.jdx.dev/). After cloning:
+
+```bash
+mise install               # installs the pinned Rust toolchain + prek
+mise run precommit-install # wires up .git/hooks (one-time)
+mise run precommit         # runs all hooks across the whole tree
+```
+
+The pre-commit config (`.pre-commit-config.yaml`) runs `cargo fmt`, `cargo check`, `cargo clippy` for both the default and `--no-default-features` feature sets, plus the usual whitespace/EOF/TOML/YAML hygiene hooks. Hooks are executed by [`prek`](https://github.com/j178/prek), a fast Rust reimplementation of the `pre-commit` framework — `mise install` brings it in automatically.
+
 ## Fuzzing
 
 Fuzz testing is set up using `cargo-fuzz` (requires Linux/macOS or WSL):
@@ -113,4 +172,3 @@ cargo +nightly fuzz run fuzz_pe_parse
 ## License
 
 MIT
-

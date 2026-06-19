@@ -19,7 +19,8 @@
 //! }
 //! ```
 
-use std::fmt;
+use crate::prelude::*;
+use core::fmt;
 
 /// Severity level of a validation issue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -206,7 +207,7 @@ impl ValidationResult {
 
 impl IntoIterator for ValidationResult {
     type Item = ValidationIssue;
-    type IntoIter = std::vec::IntoIter<ValidationIssue>;
+    type IntoIter = alloc::vec::IntoIter<ValidationIssue>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.issues.into_iter()
@@ -215,7 +216,7 @@ impl IntoIterator for ValidationResult {
 
 impl<'a> IntoIterator for &'a ValidationResult {
     type Item = &'a ValidationIssue;
-    type IntoIter = std::slice::Iter<'a, ValidationIssue>;
+    type IntoIter = core::slice::Iter<'a, ValidationIssue>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.issues.iter()

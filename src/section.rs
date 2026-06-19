@@ -1,8 +1,8 @@
 //! Section Header structures and parsing.
 
+use crate::prelude::*;
 use crate::reader::Reader;
 use crate::{Error, Result};
-use std::borrow::Cow;
 
 /// Section characteristics flags.
 pub mod characteristics {

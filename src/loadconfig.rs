@@ -3,6 +3,7 @@
 //! The Load Configuration Directory contains security features like
 //! SafeSEH, CFG (Control Flow Guard), and other runtime configuration.
 
+use crate::prelude::*;
 use crate::{Error, Result};
 
 /// IMAGE_LOAD_CONFIG_DIRECTORY32 (Windows 10+) - 192 bytes

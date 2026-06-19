@@ -23,6 +23,7 @@
 //! # Ok::<(), portex::Error>(())
 //! ```
 
+use crate::prelude::*;
 use crate::{Error, Result};
 
 /// IMAGE_BOUND_FORWARDER_REF structure.

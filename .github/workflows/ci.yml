@@ -10,13 +10,14 @@ jobs:
   build:
     runs-on: windows-latest
     strategy:
+      fail-fast: false
       matrix:
         target: [x86_64-pc-windows-msvc, i686-pc-windows-msvc]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install mise
-        uses: jdx/mise-action@v2
+        uses: jdx/mise-action@v4
         with:
           experimental: true
 
@@ -24,24 +25,29 @@ jobs:
         run: rustup target add ${{ matrix.target }}
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.toml') }}
           restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
 
-      - name: Build
+      - name: Build (default features)
         run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build (no_std + alloc)
+        run: cargo build --release --target ${{ matrix.target }} --no-default-features
 
       - name: Check formatting
         run: cargo fmt --check
 
-      - name: Clippy
+      - name: Clippy (default features)
         run: cargo clippy --target ${{ matrix.target }} -- -D warnings
+
+      - name: Clippy (no_std + alloc)
+        run: cargo clippy --target ${{ matrix.target }} --no-default-features -- -D warnings
 
       - name: Test
         run: cargo test --all --target ${{ matrix.target }}
-

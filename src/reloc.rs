@@ -50,6 +50,7 @@
 //! # Ok::<(), portex::Error>(())
 //! ```
 
+use crate::prelude::*;
 use crate::{Error, Result};
 
 /// Relocation types.
@@ -271,51 +272,43 @@ impl RelocationTable {
                 }
 
                 match entry.reloc_type {
-                    RelocationType::HighLow => {
-                        if rva + 4 <= buffer.len() {
-                            let value = u32::from_le_bytes([
-                                buffer[rva],
-                                buffer[rva + 1],
-                                buffer[rva + 2],
-                                buffer[rva + 3],
-                            ]);
-                            let new_value = (value as i64 + delta) as u32;
-                            buffer[rva..rva + 4].copy_from_slice(&new_value.to_le_bytes());
-                        }
+                    RelocationType::HighLow if rva + 4 <= buffer.len() => {
+                        let value = u32::from_le_bytes([
+                            buffer[rva],
+                            buffer[rva + 1],
+                            buffer[rva + 2],
+                            buffer[rva + 3],
+                        ]);
+                        let new_value = (value as i64 + delta) as u32;
+                        buffer[rva..rva + 4].copy_from_slice(&new_value.to_le_bytes());
                     }
-                    RelocationType::Dir64 => {
-                        if is_64bit && rva + 8 <= buffer.len() {
-                            let value = u64::from_le_bytes([
-                                buffer[rva],
-                                buffer[rva + 1],
-                                buffer[rva + 2],
-                                buffer[rva + 3],
-                                buffer[rva + 4],
-                                buffer[rva + 5],
-                                buffer[rva + 6],
-                                buffer[rva + 7],
-                            ]);
-                            let new_value = (value as i64 + delta) as u64;
-                            buffer[rva..rva + 8].copy_from_slice(&new_value.to_le_bytes());
-                        }
+                    RelocationType::Dir64 if is_64bit && rva + 8 <= buffer.len() => {
+                        let value = u64::from_le_bytes([
+                            buffer[rva],
+                            buffer[rva + 1],
+                            buffer[rva + 2],
+                            buffer[rva + 3],
+                            buffer[rva + 4],
+                            buffer[rva + 5],
+                            buffer[rva + 6],
+                            buffer[rva + 7],
+                        ]);
+                        let new_value = (value as i64 + delta) as u64;
+                        buffer[rva..rva + 8].copy_from_slice(&new_value.to_le_bytes());
                     }
-                    RelocationType::High => {
-                        if rva + 2 <= buffer.len() {
-                            let value = u16::from_le_bytes([buffer[rva], buffer[rva + 1]]);
-                            let full = (value as i64) << 16;
-                            let new_full = full + delta;
-                            let new_value = ((new_full >> 16) & 0xFFFF) as u16;
-                            buffer[rva..rva + 2].copy_from_slice(&new_value.to_le_bytes());
-                        }
+                    RelocationType::High if rva + 2 <= buffer.len() => {
+                        let value = u16::from_le_bytes([buffer[rva], buffer[rva + 1]]);
+                        let full = (value as i64) << 16;
+                        let new_full = full + delta;
+                        let new_value = ((new_full >> 16) & 0xFFFF) as u16;
+                        buffer[rva..rva + 2].copy_from_slice(&new_value.to_le_bytes());
                     }
-                    RelocationType::Low => {
-                        if rva + 2 <= buffer.len() {
-                            let value = u16::from_le_bytes([buffer[rva], buffer[rva + 1]]);
-                            let new_value = ((value as i64 + delta) & 0xFFFF) as u16;
-                            buffer[rva..rva + 2].copy_from_slice(&new_value.to_le_bytes());
-                        }
+                    RelocationType::Low if rva + 2 <= buffer.len() => {
+                        let value = u16::from_le_bytes([buffer[rva], buffer[rva + 1]]);
+                        let new_value = ((value as i64 + delta) & 0xFFFF) as u16;
+                        buffer[rva..rva + 2].copy_from_slice(&new_value.to_le_bytes());
                     }
-                    _ => {} // Other types not commonly used
+                    _ => {} // Other types not commonly used, or bounds-checked out
                 }
             }
         }

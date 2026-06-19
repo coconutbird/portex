@@ -47,6 +47,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+use crate::prelude::*;
 use crate::{Error, Result};
 
 /// Standard resource types.
@@ -815,9 +816,7 @@ impl ResourceBuilder {
     }
 
     fn compute_layout(&self) -> ResourceLayout {
-        // Group entries by type -> name -> language
-        use std::collections::BTreeMap;
-
+        // Group entries by type -> name -> language.
         // Type -> Name -> Vec<(language, entry_idx)>
         let mut grouped: BTreeMap<ResourceIdKey, BTreeMap<ResourceIdKey, Vec<(u16, usize)>>> =
             BTreeMap::new();

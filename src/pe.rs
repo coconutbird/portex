@@ -63,10 +63,17 @@ use crate::coff::{CoffHeader, PE_SIGNATURE, verify_pe_signature};
 use crate::dos::DosHeader;
 use crate::layout::{self, LayoutConfig};
 use crate::optional::OptionalHeader;
-use crate::reader::{FileReader, Reader, SliceReader};
+use crate::prelude::*;
+use crate::reader::{Reader, SliceReader};
 use crate::section::{Section, SectionHeader};
+
+#[cfg(feature = "std")]
+use crate::reader::FileReader;
+#[cfg(feature = "std")]
 use std::fs::File;
+#[cfg(feature = "std")]
 use std::io::Write;
+#[cfg(feature = "std")]
 use std::path::Path;
 
 /// A parsed PE file with owned section data.
@@ -157,6 +164,7 @@ impl PE {
     }
 
     /// Load a PE file from disk.
+    #[cfg(feature = "std")]
     #[must_use = "loading returns a PE structure that should be used"]
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let data = std::fs::read(path)?;
@@ -731,6 +739,7 @@ impl PE {
 
     /// Write the PE file to disk.
     /// This method does not mutate self - it computes layout on a clone.
+    #[cfg(feature = "std")]
     pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let bytes = self.build();
         let mut file = File::create(path)?;
@@ -2068,6 +2077,7 @@ impl PEHeaders {
     }
 
     /// Read headers from a file on disk.
+    #[cfg(feature = "std")]
     #[must_use = "loading returns PE headers that should be used"]
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let reader = FileReader::open(path)?;

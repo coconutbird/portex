@@ -8,4 +8,3 @@ fn main() {
         let _ = PE::parse(data);
     });
 }
-

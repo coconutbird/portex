@@ -24,6 +24,7 @@
 //! # Ok::<(), portex::Error>(())
 //! ```
 
+use crate::prelude::*;
 use crate::{Error, Result};
 
 /// IMAGE_TLS_DIRECTORY32 - 24 bytes

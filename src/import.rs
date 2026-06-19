@@ -52,6 +52,7 @@
 //! # Ok::<(), portex::Error>(())
 //! ```
 
+use crate::prelude::*;
 use crate::{Error, Result};
 
 /// Maximum length for DLL and function names when reading import/export tables.

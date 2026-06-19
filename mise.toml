@@ -1,3 +1,11 @@
 [tools]
 rust = "stable"
+prek = "latest"
 
+[tasks.precommit-install]
+description = "Install prek git hooks (.pre-commit-config.yaml)"
+run = "prek install"
+
+[tasks.precommit]
+description = "Run prek across all tracked files"
+run = "prek run --all-files"
