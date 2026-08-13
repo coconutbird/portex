@@ -104,16 +104,17 @@ impl SectionHeader {
     /// Check if this RVA falls within this section.
     pub fn contains_rva(&self, rva: u32) -> bool {
         let size = self.virtual_size.max(self.size_of_raw_data);
-        rva >= self.virtual_address && rva < self.virtual_address + size
+        rva.checked_sub(self.virtual_address)
+            .is_some_and(|offset| offset < size)
     }
 
     /// Convert an RVA to file offset within this section.
     pub fn rva_to_offset(&self, rva: u32) -> Option<u32> {
-        if self.contains_rva(rva) {
-            Some(self.pointer_to_raw_data + (rva - self.virtual_address))
-        } else {
-            None
+        let section_offset = rva.checked_sub(self.virtual_address)?;
+        if self.pointer_to_raw_data == 0 || section_offset >= self.size_of_raw_data {
+            return None;
         }
+        self.pointer_to_raw_data.checked_add(section_offset)
     }
 
     /// Parse a section header from bytes.
@@ -341,5 +342,25 @@ mod tests {
 
         assert_eq!(section.data_at_rva(0x2001, 2), Some(&[0x22, 0x33][..]));
         assert_eq!(section.data_at_rva(0x2000, 10), None); // too long
+    }
+
+    #[test]
+    fn test_rva_to_offset_excludes_virtual_only_data() {
+        let header = SectionHeader {
+            name: *b".data\0\0\0",
+            virtual_size: 0x1000,
+            virtual_address: 0x2000,
+            size_of_raw_data: 0x200,
+            pointer_to_raw_data: 0x400,
+            pointer_to_relocations: 0,
+            pointer_to_linenumbers: 0,
+            number_of_relocations: 0,
+            number_of_linenumbers: 0,
+            characteristics: characteristics::INITIALIZED_DATA | characteristics::READ,
+        };
+
+        assert!(header.contains_rva(0x2200));
+        assert_eq!(header.rva_to_offset(0x21ff), Some(0x5ff));
+        assert_eq!(header.rva_to_offset(0x2200), None);
     }
 }

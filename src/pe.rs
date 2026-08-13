@@ -58,7 +58,6 @@
 //! # Ok::<(), portex::Error>(())
 //! ```
 
-use crate::Result;
 use crate::coff::{CoffHeader, PE_SIGNATURE, verify_pe_signature};
 use crate::dos::DosHeader;
 use crate::layout::{self, LayoutConfig};
@@ -66,6 +65,7 @@ use crate::optional::OptionalHeader;
 use crate::prelude::*;
 use crate::reader::{Reader, SliceReader};
 use crate::section::{Section, SectionHeader};
+use crate::{Error, Result};
 
 #[cfg(feature = "std")]
 use crate::reader::FileReader;
@@ -75,6 +75,20 @@ use std::fs::File;
 use std::io::Write;
 #[cfg(feature = "std")]
 use std::path::Path;
+
+/// Describes how PE bytes are laid out in their source.
+///
+/// Raw PE files store section payloads at [`SectionHeader::pointer_to_raw_data`],
+/// while images mapped by a loader store them at their RVA
+/// ([`SectionHeader::virtual_address`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ImageLayout {
+    /// Raw file layout, as stored on disk or in a byte-for-byte file buffer.
+    #[default]
+    File,
+    /// Loader-mapped image layout, where an RVA is an offset from the image base.
+    Mapped,
+}
 
 /// A parsed PE file with owned section data.
 /// This is the main type for reading, modifying, and writing PE files.
@@ -127,16 +141,52 @@ impl PE {
         crate::builder::PEBuilder::new()
     }
 
-    /// Parse a PE file from a byte slice.
+    /// Parse raw PE file bytes from a byte slice.
+    ///
+    /// This expects file layout even though the bytes themselves are already in
+    /// memory. Use [`Self::parse_mapped`] for an image laid out by a PE loader.
     #[must_use = "parsing returns a PE structure that should be used"]
     pub fn parse(data: &[u8]) -> Result<Self> {
+        Self::parse_with_layout(data, ImageLayout::File)
+    }
+
+    /// Parse a loader-mapped PE image from a byte slice.
+    ///
+    /// The slice must begin at the image base. Section payloads are read from
+    /// their RVAs rather than from `PointerToRawData` file offsets.
+    #[must_use = "parsing returns a PE structure that should be used"]
+    pub fn parse_mapped(data: &[u8]) -> Result<Self> {
+        Self::parse_with_layout(data, ImageLayout::Mapped)
+    }
+
+    /// Parse PE bytes using an explicit source layout.
+    #[must_use = "parsing returns a PE structure that should be used"]
+    pub fn parse_with_layout(data: &[u8], layout: ImageLayout) -> Result<Self> {
         let reader = SliceReader::new(data);
-        let headers = PEHeaders::read_from(&reader, 0)?;
+        Self::read_from(&reader, 0, layout)
+    }
+
+    /// Read a complete PE from any [`Reader`] using an explicit source layout.
+    ///
+    /// `base_offset` is the source offset of the image's DOS header. For a
+    /// [`crate::BaseAddressReader`] created at a module base, pass `0` and use
+    /// [`ImageLayout::Mapped`]. A remote-process reader that addresses the whole
+    /// process can instead pass the module's base address as `base_offset`.
+    #[must_use = "parsing returns a PE structure that should be used"]
+    pub fn read_from<R: Reader>(reader: &R, base_offset: u64, layout: ImageLayout) -> Result<Self> {
+        let headers = PEHeaders::read_from(reader, base_offset)?;
 
         // Read DOS stub
-        let dos_stub_size = headers.pe_offset as usize - DosHeader::SIZE;
+        let dos_stub_start = base_offset
+            .checked_add(DosHeader::SIZE as u64)
+            .ok_or_else(|| Error::invalid_section("DOS stub offset overflow"))?;
+        let dos_stub_size = headers
+            .pe_offset
+            .checked_sub(dos_stub_start)
+            .and_then(|size| usize::try_from(size).ok())
+            .ok_or_else(|| Error::invalid_section("PE header overlaps the DOS header"))?;
         let dos_stub = if dos_stub_size > 0 {
-            data[DosHeader::SIZE..DosHeader::SIZE + dos_stub_size].to_vec()
+            Self::read_source_bytes(reader, dos_stub_start, dos_stub_size)?
         } else {
             Vec::new()
         };
@@ -144,12 +194,24 @@ impl PE {
         // Read section data
         let mut sections = Vec::with_capacity(headers.section_headers.len());
         for header in headers.section_headers {
-            let start = header.pointer_to_raw_data as usize;
-            let size = header.size_of_raw_data as usize;
-            let section_data = if start > 0 && size > 0 && start + size <= data.len() {
-                data[start..start + size].to_vec()
-            } else {
-                Vec::new()
+            let source_range = match layout {
+                ImageLayout::File => (header.pointer_to_raw_data != 0
+                    && header.size_of_raw_data != 0)
+                    .then_some((header.pointer_to_raw_data, header.size_of_raw_data as usize)),
+                ImageLayout::Mapped => {
+                    let mapped_size = header.virtual_size.max(header.size_of_raw_data);
+                    (mapped_size != 0).then_some((header.virtual_address, mapped_size as usize))
+                }
+            };
+
+            let section_data = match source_range {
+                Some((relative_offset, size)) => {
+                    let source_offset = base_offset
+                        .checked_add(relative_offset as u64)
+                        .ok_or_else(|| Error::invalid_section("section source offset overflow"))?;
+                    Self::read_source_bytes(reader, source_offset, size)?
+                }
+                None => Vec::new(),
             };
             sections.push(Section::from_header_and_data(header, section_data));
         }
@@ -161,6 +223,34 @@ impl PE {
             optional_header: headers.optional_header,
             sections,
         })
+    }
+
+    /// Read a source range, preserving the historical behavior of representing
+    /// truncated section data as an empty section.
+    fn read_source_bytes<R: Reader>(reader: &R, offset: u64, len: usize) -> Result<Vec<u8>> {
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+
+        let end = match offset.checked_add(len as u64) {
+            Some(end) => end,
+            None => return Ok(Vec::new()),
+        };
+        if reader.size().is_some_and(|source_size| end > source_size) {
+            return Ok(Vec::new());
+        }
+
+        let mut data = vec![0u8; len];
+        let mut total_read = 0usize;
+        while total_read < len {
+            let read_offset = offset + total_read as u64;
+            let count = reader.read_at(read_offset, &mut data[total_read..])?;
+            if count == 0 {
+                return Ok(Vec::new());
+            }
+            total_read += count;
+        }
+        Ok(data)
     }
 
     /// Load a PE file from disk.
@@ -221,15 +311,33 @@ impl PE {
         Some(())
     }
 
-    /// Convert an RVA to a file offset.
+    /// Convert an RVA to an image-relative source offset for the requested layout.
+    ///
+    /// When using [`Self::read_from`] with a nonzero `base_offset`, add that base
+    /// to the returned value before reading from the original source.
     #[must_use]
-    pub fn rva_to_offset(&self, rva: u32) -> Option<u32> {
-        for section in &self.sections {
-            if let Some(offset) = section.header.rva_to_offset(rva) {
-                return Some(offset);
+    pub fn rva_to_source_offset(&self, rva: u32, layout: ImageLayout) -> Option<u32> {
+        if rva >= self.optional_header.size_of_image() {
+            return None;
+        }
+
+        match layout {
+            ImageLayout::Mapped => Some(rva),
+            ImageLayout::File => {
+                if rva < self.optional_header.size_of_headers() {
+                    return Some(rva);
+                }
+                self.sections
+                    .iter()
+                    .find_map(|section| section.header.rva_to_offset(rva))
             }
         }
-        None
+    }
+
+    /// Convert an RVA to a raw-file offset.
+    #[must_use]
+    pub fn rva_to_offset(&self, rva: u32) -> Option<u32> {
+        self.rva_to_source_offset(rva, ImageLayout::File)
     }
 
     /// Add a new section.
@@ -2109,15 +2217,33 @@ impl PEHeaders {
         self.section_headers.iter().find(|s| s.name_str() == name)
     }
 
-    /// Convert an RVA to a file offset.
+    /// Convert an RVA to an image-relative source offset for the requested layout.
+    ///
+    /// When [`Self::read_from`] was called with a nonzero `base_offset`, add that
+    /// base to the returned value before reading from the original source.
     #[must_use]
-    pub fn rva_to_offset(&self, rva: u32) -> Option<u32> {
-        for section in &self.section_headers {
-            if let Some(offset) = section.rva_to_offset(rva) {
-                return Some(offset);
+    pub fn rva_to_source_offset(&self, rva: u32, layout: ImageLayout) -> Option<u32> {
+        if rva >= self.optional_header.size_of_image() {
+            return None;
+        }
+
+        match layout {
+            ImageLayout::Mapped => Some(rva),
+            ImageLayout::File => {
+                if rva < self.optional_header.size_of_headers() {
+                    return Some(rva);
+                }
+                self.section_headers
+                    .iter()
+                    .find_map(|section| section.rva_to_offset(rva))
             }
         }
-        None
+    }
+
+    /// Convert an RVA to a raw-file offset.
+    #[must_use]
+    pub fn rva_to_offset(&self, rva: u32) -> Option<u32> {
+        self.rva_to_source_offset(rva, ImageLayout::File)
     }
 
     /// Get the entry point RVA.

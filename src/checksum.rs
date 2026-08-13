@@ -72,6 +72,7 @@ pub fn compute_pe_checksum(data: &[u8]) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::prelude::vec;
 
     #[test]
     fn test_checksum_field_offset() {

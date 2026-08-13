@@ -9,7 +9,7 @@ A self-contained PE (Portable Executable) file reader/writer library for Rust.
 
 - **Zero dependencies** - All PE structures defined from scratch, no Windows SDK required
 - **`no_std` support** - Disable the default `std` feature to build `no_std + alloc`; bare-metal targets (UEFI loaders, kernels, embedded reverse-engineering tools) keep the full parser/builder/validation API
-- **Multiple loading modes** - Load from files, memory slices, or custom sources via the `Reader` trait
+- **Multiple loading modes** - Load raw files, loader-mapped images, memory slices, or custom sources via the `Reader` trait
 - **Partial loading** - Use `PEHeaders` for lightweight header-only parsing
 - **Full PE support** - Imports, exports, resources, relocations, TLS, debug info, exceptions, and more
 - **Builder pattern** - Construct new PE structures programmatically
@@ -63,32 +63,41 @@ let headers = PEHeaders::from_file("example.dll")?;
 println!("Entry point: {:#x}", headers.entry_point());
 ```
 
-### `no_std` quick start
+### Raw files and mapped images
 
-When `std` is disabled, you bring the bytes yourself — either as a `&[u8]` you already have in memory, or via a closure that reads at an RVA. Headers parse from a slice; directory walkers (relocations, imports, exports, resources, …) take an RVA-resolving closure so you can bridge whatever "where the image lives" abstraction you have (a remote-process handle, a hypervisor view of guest memory, a UEFI-loaded image).
+Portex distinguishes raw file bytes from images already laid out by a PE loader:
 
 ```rust
-use portex::{DataDirectoryType, PEHeaders, RelocationTable};
+use portex::{ImageLayout, PE};
+
+// Raw file bytes: section data is at PointerToRawData.
+let raw_pe = PE::parse(raw_file_bytes)?;
+
+// Loader-mapped image: section data is at its RVA/VirtualAddress.
+let mapped_pe = PE::parse_mapped(mapped_image)?;
+
+// The explicit form is useful when the layout is selected dynamically.
+let mapped_pe = PE::parse_with_layout(mapped_image, ImageLayout::Mapped)?;
+```
+
+For custom or remote-process sources, use
+`PE::read_from(&reader, image_base_offset, ImageLayout::Mapped)`. Both layouts
+are normalized into the same owned `PE` representation, so convenience methods
+such as `imports()`, `exports()`, and `relocations()` work identically afterward.
+`PEHeaders::rva_to_source_offset` provides the corresponding layout-aware,
+image-relative RVA conversion when only headers are being loaded.
+
+### `no_std` quick start
+
+When `std` is disabled, you bring the bytes yourself — either as a `&[u8]` you already have in memory or through a custom `Reader`. The full `PE` API supports both raw and mapped layouts; individual directory parsers still accept an RVA-resolving closure for zero-copy or specialized access patterns.
+
+```rust
+use portex::PE;
 
 // `image` points at a PE laid out in memory (sections at their RVAs).
-let headers = PEHeaders::from_slice(image)?;
-let dir = headers
-    .optional_header
-    .data_directories()
-    .get(DataDirectoryType::BaseReloc.as_index())
-    .copied()
-    .filter(|d| d.virtual_address != 0 && d.size != 0);
-
-if let Some(dir) = dir {
-    // For an in-memory image, RVA == offset from `image_base`.
-    let read_at_rva = |rva: u32, len: usize| -> Option<Vec<u8>> {
-        let r = rva as usize;
-        let end = r.checked_add(len)?;
-        (end <= image.len()).then(|| image[r..end].to_vec())
-    };
-    let table = RelocationTable::parse(dir.virtual_address, dir.size, read_at_rva)?;
-    table.apply(image_mut, delta, /* is_64bit */ true);
-}
+let pe = PE::parse_mapped(image)?;
+let relocations = pe.relocations()?;
+relocations.apply(image_mut, delta, pe.is_64bit());
 ```
 
 ## Modules

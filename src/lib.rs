@@ -7,8 +7,9 @@
 //!
 //! ## Features
 //!
-//! - **Multiple loading modes**: Load from files, memory slices, or implement
-//!   the `Reader` trait for custom sources (e.g., remote process memory).
+//! - **Multiple loading modes**: Load raw files or loader-mapped images from
+//!   memory slices, or implement the `Reader` trait for custom sources (e.g.,
+//!   remote process memory).
 //! - **Partial loading**: Use `PEHeaders` to parse just headers without loading
 //!   the entire file - ideal for remote process scenarios.
 //! - **Self-contained**: All PE structures defined from scratch, no Windows SDK.
@@ -124,7 +125,7 @@ pub use loadconfig::{
     LoadConfigBuilder, LoadConfigDirectory, LoadConfigDirectory32, LoadConfigDirectory64,
 };
 pub use optional::{OptionalHeader, OptionalHeader32, OptionalHeader64, Subsystem};
-pub use pe::{PE, PEHeaders};
+pub use pe::{ImageLayout, PE, PEHeaders};
 #[cfg(feature = "std")]
 pub use reader::FileReader;
 pub use reader::{BaseAddressReader, Reader, SliceReader, VecReader};
