@@ -1,3 +1,6 @@
+# Taplo 0.9 cannot resolve SchemaStore's split Cargo lint schemas.
+#:schema https://raw.githubusercontent.com/SchemaStore/schemastore/cf458e6e33141d3a0506f24279de79eeeeb5130a/src/schemas/json/cargo.json
+
 [package]
 name = "portex"
 version = "0.2.0"
