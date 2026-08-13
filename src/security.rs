@@ -6,9 +6,10 @@
 //! # Examples
 //!
 //! ```no_run
-//! use portex::PE;
+//! use portex::PeFile;
 //!
-//! let pe = PE::from_file("signed.exe")?;
+//! # let file_bytes: &[u8] = &[];
+//! let pe = PeFile::parse(file_bytes)?;
 //!
 //! if let Some(certs) = pe.security()? {
 //!     for cert in &certs.certificates {
@@ -25,56 +26,76 @@ use crate::{Error, Result};
 
 /// WIN_CERTIFICATE revision values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u16)]
 pub enum CertificateRevision {
     /// WIN_CERT_REVISION_1_0
-    Revision1 = 0x0100,
+    Revision1,
     /// WIN_CERT_REVISION_2_0
-    Revision2 = 0x0200,
+    Revision2,
+    /// Revision not known to this version of the crate.
+    Unknown(u16),
 }
 
 impl CertificateRevision {
     /// Convert from raw u16.
-    pub fn from_u16(value: u16) -> Option<Self> {
+    pub const fn from_u16(value: u16) -> Self {
         match value {
-            0x0100 => Some(Self::Revision1),
-            0x0200 => Some(Self::Revision2),
-            _ => None,
+            0x0100 => Self::Revision1,
+            0x0200 => Self::Revision2,
+            other => Self::Unknown(other),
+        }
+    }
+
+    pub const fn as_u16(self) -> u16 {
+        match self {
+            Self::Revision1 => 0x0100,
+            Self::Revision2 => 0x0200,
+            Self::Unknown(value) => value,
         }
     }
 }
 
 /// WIN_CERTIFICATE type values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u16)]
 pub enum CertificateType {
     /// WIN_CERT_TYPE_X509 - X.509 certificate
-    X509 = 0x0001,
+    X509,
     /// WIN_CERT_TYPE_PKCS_SIGNED_DATA - PKCS#7 SignedData
-    PkcsSignedData = 0x0002,
+    PkcsSignedData,
     /// WIN_CERT_TYPE_RESERVED_1
-    Reserved1 = 0x0003,
+    Reserved1,
     /// WIN_CERT_TYPE_TS_STACK_SIGNED - Terminal Server Protocol Stack
-    TsStackSigned = 0x0004,
+    TsStackSigned,
+    /// Certificate type not known to this version of the crate.
+    Unknown(u16),
 }
 
 impl CertificateType {
     /// Convert from raw u16.
-    pub fn from_u16(value: u16) -> Option<Self> {
+    pub const fn from_u16(value: u16) -> Self {
         match value {
-            0x0001 => Some(Self::X509),
-            0x0002 => Some(Self::PkcsSignedData),
-            0x0003 => Some(Self::Reserved1),
-            0x0004 => Some(Self::TsStackSigned),
-            _ => None,
+            0x0001 => Self::X509,
+            0x0002 => Self::PkcsSignedData,
+            0x0003 => Self::Reserved1,
+            0x0004 => Self::TsStackSigned,
+            other => Self::Unknown(other),
+        }
+    }
+
+    pub const fn as_u16(self) -> u16 {
+        match self {
+            Self::X509 => 0x0001,
+            Self::PkcsSignedData => 0x0002,
+            Self::Reserved1 => 0x0003,
+            Self::TsStackSigned => 0x0004,
+            Self::Unknown(value) => value,
         }
     }
 }
 
 /// WIN_CERTIFICATE structure.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Certificate {
-    /// Total length including header and padding.
+    /// Total length including the header but excluding alignment padding.
     pub length: u32,
     /// Certificate revision.
     pub revision: CertificateRevision,
@@ -107,21 +128,24 @@ impl Certificate {
             )));
         }
 
-        let revision = CertificateRevision::from_u16(revision_raw).ok_or_else(|| {
-            Error::invalid_data_directory(format!(
-                "unknown certificate revision: {:#x}",
-                revision_raw
-            ))
-        })?;
+        let revision = CertificateRevision::from_u16(revision_raw);
 
-        let certificate_type = CertificateType::from_u16(cert_type_raw).ok_or_else(|| {
-            Error::invalid_data_directory(format!("unknown certificate type: {:#x}", cert_type_raw))
-        })?;
+        let certificate_type = CertificateType::from_u16(cert_type_raw);
 
         let cert_data = data[Self::HEADER_SIZE..length].to_vec();
 
         // Certificates are 8-byte aligned
-        let padded_length = (length + 7) & !7;
+        let padded_length = length
+            .checked_add(7)
+            .map(|value| value & !7)
+            .ok_or_else(|| Error::invalid_data_directory("certificate alignment overflow"))?;
+        if padded_length > data.len() {
+            return Err(Error::invalid_data_directory(format!(
+                "aligned certificate length {} exceeds the remaining directory size {}",
+                padded_length,
+                data.len()
+            )));
+        }
 
         Ok((
             Self {
@@ -136,7 +160,7 @@ impl Certificate {
 }
 
 /// Security directory containing all certificates.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SecurityDirectory {
     /// List of certificates.
     pub certificates: Vec<Certificate>,
@@ -149,14 +173,18 @@ impl SecurityDirectory {
         let mut offset = 0;
 
         while offset < data.len() {
-            // Need at least header size remaining
             if data.len() - offset < Certificate::HEADER_SIZE {
-                break;
+                return Err(Error::invalid_data_directory(format!(
+                    "{} trailing bytes remain after the final certificate",
+                    data.len() - offset
+                )));
             }
 
             let (cert, consumed) = Certificate::parse(&data[offset..])?;
             certificates.push(cert);
-            offset += consumed;
+            offset = offset
+                .checked_add(consumed)
+                .ok_or_else(|| Error::invalid_data_directory("certificate-table size overflow"))?;
         }
 
         Ok(Self { certificates })
@@ -182,13 +210,35 @@ impl SecurityBuilder {
     ///
     /// Each certificate is 8-byte aligned.
     pub fn calculate_size(&self, directory: &SecurityDirectory) -> usize {
-        let mut size = 0;
-        for cert in &directory.certificates {
-            // Header (8 bytes) + data, padded to 8-byte boundary
-            let cert_size = Certificate::HEADER_SIZE + cert.data.len();
-            size += (cert_size + 7) & !7;
-        }
-        size
+        self.try_calculate_size(directory)
+            .expect("certificate table size overflow: use try_calculate_size()")
+    }
+
+    /// Calculate the table size with checked WIN_CERTIFICATE lengths.
+    pub fn try_calculate_size(&self, directory: &SecurityDirectory) -> Result<usize> {
+        let size = directory
+            .certificates
+            .iter()
+            .try_fold(0usize, |total, certificate| {
+                let length = Certificate::HEADER_SIZE
+                    .checked_add(certificate.data.len())
+                    .ok_or_else(|| Error::invalid_data_directory("certificate length overflow"))?;
+                u32::try_from(length).map_err(|_| {
+                    Error::invalid_data_directory("WIN_CERTIFICATE length exceeds u32")
+                })?;
+                let padded = length
+                    .checked_add(7)
+                    .map(|value| value & !7)
+                    .ok_or_else(|| {
+                        Error::invalid_data_directory("certificate alignment overflow")
+                    })?;
+                total
+                    .checked_add(padded)
+                    .ok_or_else(|| Error::invalid_data_directory("certificate-table size overflow"))
+            })?;
+        u32::try_from(size)
+            .map_err(|_| Error::invalid_data_directory("certificate table exceeds u32"))?;
+        Ok(size)
     }
 
     /// Build the security directory data.
@@ -198,25 +248,33 @@ impl SecurityBuilder {
     /// - virtual_address = file offset where data was appended
     /// - size = returned size
     pub fn build(&self, directory: &SecurityDirectory) -> Vec<u8> {
+        self.try_build(directory)
+            .expect("certificate build failed: use try_build() for fallible serialization")
+    }
+
+    /// Build the security directory with checked lengths and alignments.
+    pub fn try_build(&self, directory: &SecurityDirectory) -> Result<Vec<u8>> {
         if directory.certificates.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
-        let total_size = self.calculate_size(directory);
+        let total_size = self.try_calculate_size(directory)?;
         let mut data = vec![0u8; total_size];
         let mut offset = 0;
 
         for cert in &directory.certificates {
             // Write length (header + data, unpadded)
             let cert_length = Certificate::HEADER_SIZE + cert.data.len();
-            data[offset..offset + 4].copy_from_slice(&(cert_length as u32).to_le_bytes());
+            let cert_length_u32 = u32::try_from(cert_length)
+                .map_err(|_| Error::invalid_data_directory("certificate length exceeds u32"))?;
+            data[offset..offset + 4].copy_from_slice(&cert_length_u32.to_le_bytes());
 
             // Write revision
-            data[offset + 4..offset + 6].copy_from_slice(&(cert.revision as u16).to_le_bytes());
+            data[offset + 4..offset + 6].copy_from_slice(&cert.revision.as_u16().to_le_bytes());
 
             // Write type
             data[offset + 6..offset + 8]
-                .copy_from_slice(&(cert.certificate_type as u16).to_le_bytes());
+                .copy_from_slice(&cert.certificate_type.as_u16().to_le_bytes());
 
             // Write certificate data
             data[offset + 8..offset + 8 + cert.data.len()].copy_from_slice(&cert.data);
@@ -225,7 +283,7 @@ impl SecurityBuilder {
             offset += (cert_length + 7) & !7;
         }
 
-        data
+        Ok(data)
     }
 }
 
@@ -242,22 +300,28 @@ mod tests {
     fn test_certificate_revision() {
         assert_eq!(
             CertificateRevision::from_u16(0x0100),
-            Some(CertificateRevision::Revision1)
+            CertificateRevision::Revision1
         );
         assert_eq!(
             CertificateRevision::from_u16(0x0200),
-            Some(CertificateRevision::Revision2)
+            CertificateRevision::Revision2
         );
-        assert_eq!(CertificateRevision::from_u16(0x0300), None);
+        assert_eq!(
+            CertificateRevision::from_u16(0x0300),
+            CertificateRevision::Unknown(0x0300)
+        );
     }
 
     #[test]
     fn test_certificate_type() {
         assert_eq!(
             CertificateType::from_u16(0x0002),
-            Some(CertificateType::PkcsSignedData)
+            CertificateType::PkcsSignedData
         );
-        assert_eq!(CertificateType::from_u16(0x0000), None);
+        assert_eq!(
+            CertificateType::from_u16(0x0000),
+            CertificateType::Unknown(0x0000)
+        );
     }
 
     #[test]

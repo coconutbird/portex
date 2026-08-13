@@ -1,7 +1,7 @@
 //! Section Header structures and parsing.
 
 use crate::prelude::*;
-use crate::reader::Reader;
+use crate::reader::ReadAt;
 use crate::{Error, Result};
 
 /// Section characteristics flags.
@@ -160,18 +160,24 @@ impl SectionHeader {
         Ok(())
     }
 
-    /// Parse a section header from a Reader at the given offset.
-    pub fn read_from<R: Reader>(reader: &R, offset: u64) -> Result<Self> {
+    /// Parse a section header from a positional reader at the given offset.
+    pub fn read_from<R: ReadAt>(reader: &R, offset: u64) -> Result<Self> {
         let mut buf = [0u8; Self::SIZE];
         reader.read_exact_at(offset, &mut buf)?;
         Self::parse(&buf)
     }
 
-    /// Read multiple section headers from a Reader.
-    pub fn read_sections<R: Reader>(reader: &R, offset: u64, count: usize) -> Result<Vec<Self>> {
+    /// Read multiple section headers from a positional reader.
+    pub fn read_sections<R: ReadAt>(reader: &R, offset: u64, count: usize) -> Result<Vec<Self>> {
         let mut sections = Vec::with_capacity(count);
         for i in 0..count {
-            let section_offset = offset + (i * Self::SIZE) as u64;
+            let relative_offset = i
+                .checked_mul(Self::SIZE)
+                .and_then(|value| u64::try_from(value).ok())
+                .ok_or_else(|| Error::invalid_section("section-table size overflow"))?;
+            let section_offset = offset
+                .checked_add(relative_offset)
+                .ok_or_else(|| Error::invalid_section("section-table offset overflow"))?;
             sections.push(Self::read_from(reader, section_offset)?);
         }
         Ok(sections)
@@ -187,12 +193,15 @@ impl SectionHeader {
 
 /// A section with its header and owned data.
 /// This is the main type for working with sections during PE modification.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Section {
     /// Section header (will be updated during layout).
     pub header: SectionHeader,
     /// Raw section data (owned).
     pub data: Vec<u8>,
+    /// Original raw extent when `data` came from a loader-mapped image.
+    pub(crate) mapped_raw_size: Option<u32>,
+    pub(crate) mapped_data_len: usize,
 }
 
 impl Section {
@@ -214,12 +223,30 @@ impl Section {
         Self {
             header,
             data: Vec::new(),
+            mapped_raw_size: None,
+            mapped_data_len: 0,
         }
     }
 
     /// Create a section from a header and data.
     pub fn from_header_and_data(header: SectionHeader, data: Vec<u8>) -> Self {
-        Self { header, data }
+        Self {
+            header,
+            data,
+            mapped_raw_size: None,
+            mapped_data_len: 0,
+        }
+    }
+
+    /// Create a section from bytes copied out of a loader-mapped image.
+    pub(crate) fn from_mapped_header_and_data(header: SectionHeader, data: Vec<u8>) -> Self {
+        let mapped_data_len = data.len();
+        Self {
+            mapped_raw_size: Some(header.size_of_raw_data),
+            mapped_data_len,
+            header,
+            data,
+        }
     }
 
     /// Get the section name.
@@ -230,14 +257,60 @@ impl Section {
 
     /// Set the section data.
     pub fn set_data(&mut self, data: Vec<u8>) {
+        self.try_set_data(data)
+            .expect("section data exceeds u32: use try_set_data() for fallible updates");
+    }
+
+    /// Set section data after checking that its virtual size is representable.
+    pub fn try_set_data(&mut self, data: Vec<u8>) -> Result<()> {
+        let size = u32::try_from(data.len())
+            .map_err(|_| Error::invalid_section("section data exceeds u32"))?;
         self.data = data;
-        self.header.virtual_size = self.data.len() as u32;
+        self.mapped_raw_size = None;
+        self.mapped_data_len = 0;
+        self.header.virtual_size = size;
+        Ok(())
     }
 
     /// Append data to the section.
     pub fn append_data(&mut self, data: &[u8]) {
+        self.try_append_data(data)
+            .expect("section data exceeds u32: use try_append_data() for fallible updates");
+    }
+
+    /// Append bytes and return their section-relative offset.
+    pub fn try_append_data(&mut self, data: &[u8]) -> Result<u32> {
+        let offset = u32::try_from(self.data.len())
+            .map_err(|_| Error::invalid_section("section data exceeds u32"))?;
+        let new_len = self
+            .data
+            .len()
+            .checked_add(data.len())
+            .and_then(|length| u32::try_from(length).ok())
+            .ok_or_else(|| Error::invalid_section("section data exceeds u32"))?;
         self.data.extend_from_slice(data);
-        self.header.virtual_size = self.data.len() as u32;
+        self.mapped_raw_size = None;
+        self.mapped_data_len = 0;
+        self.header.virtual_size = new_len;
+        Ok(offset)
+    }
+
+    /// Mark every byte in this section as initialized raw-file data.
+    ///
+    /// Mapped-image parsing retains virtual zero-fill in `data` while
+    /// remembering the smaller original raw extent. Call this after editing
+    /// that virtual tail when it should be emitted to a rebuilt file.
+    pub fn materialize_virtual_data(&mut self) {
+        self.mapped_raw_size = None;
+        self.mapped_data_len = 0;
+        self.header.virtual_size = u32::try_from(self.data.len())
+            .expect("parsed section data is always representable as u32");
+    }
+
+    pub(crate) fn preserved_raw_size(&self) -> Option<u32> {
+        (self.data.len() == self.mapped_data_len)
+            .then_some(self.mapped_raw_size)
+            .flatten()
     }
 
     /// Check if an RVA falls within this section.
@@ -250,9 +323,10 @@ impl Section {
         if !self.contains_rva(rva) {
             return None;
         }
-        let offset = (rva - self.header.virtual_address) as usize;
-        if offset + len <= self.data.len() {
-            Some(&self.data[offset..offset + len])
+        let offset = rva.checked_sub(self.header.virtual_address)? as usize;
+        let end = offset.checked_add(len)?;
+        if end <= self.data.len() {
+            Some(&self.data[offset..end])
         } else {
             None
         }
@@ -263,9 +337,10 @@ impl Section {
         if !self.contains_rva(rva) {
             return None;
         }
-        let offset = (rva - self.header.virtual_address) as usize;
-        if offset + len <= self.data.len() {
-            Some(&mut self.data[offset..offset + len])
+        let offset = rva.checked_sub(self.header.virtual_address)? as usize;
+        let end = offset.checked_add(len)?;
+        if end <= self.data.len() {
+            Some(&mut self.data[offset..end])
         } else {
             None
         }

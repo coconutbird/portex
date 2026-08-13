@@ -18,7 +18,7 @@ pub fn calculate_checksum(data: &[u8], checksum_offset: usize) -> u32 {
     let mut i = 0;
     while i + 1 < len {
         // Skip the checksum field (4 bytes at checksum_offset)
-        if i >= checksum_offset && i < checksum_offset + 4 {
+        if i >= checksum_offset && i < checksum_offset.saturating_add(4) {
             i += 2;
             continue;
         }
@@ -39,7 +39,7 @@ pub fn calculate_checksum(data: &[u8], checksum_offset: usize) -> u32 {
     }
 
     // Add file size
-    (sum as u32) + (len as u32)
+    (sum as u32).wrapping_add(len as u32)
 }
 
 /// Get the offset of the checksum field in the optional header.
@@ -50,12 +50,15 @@ pub fn checksum_field_offset(data: &[u8]) -> Option<usize> {
         return None;
     }
 
-    let pe_offset = u32::from_le_bytes([data[0x3C], data[0x3D], data[0x3E], data[0x3F]]) as usize;
+    let pe_offset = usize::try_from(u32::from_le_bytes([
+        data[0x3C], data[0x3D], data[0x3E], data[0x3F],
+    ]))
+    .ok()?;
 
     // PE signature (4) + COFF header (20) + checksum is at offset 64 in optional header
-    let checksum_offset = pe_offset + 4 + 20 + 64;
+    let checksum_offset = pe_offset.checked_add(4 + 20 + 64)?;
 
-    if checksum_offset + 4 > data.len() {
+    if checksum_offset.checked_add(4)? > data.len() {
         return None;
     }
 

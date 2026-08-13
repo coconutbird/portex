@@ -2,7 +2,7 @@
 name = "portex"
 version = "0.2.0"
 edition = "2024"
-description = "A self-contained, no_std-friendly PE (Portable Executable) file reader/writer library"
+description = "A no_std-friendly parser, editor, and builder for raw and mapped PE executable images"
 license = "MIT"
 repository = "https://github.com/coconutbird/portex"
 readme = "README.md"
@@ -11,23 +11,16 @@ categories = ["parsing", "development-tools"]
 
 [features]
 default = ["std"]
-std = []
+std = ["nostdio/std"]
 
 [dependencies]
+nostdio = { version = "0.2.0", default-features = false }
 
 [lints.rust]
-warnings = { level = "deny", priority = -2 }
-unused = { level = "deny", priority = -1 }
-nonstandard_style = { level = "deny", priority = -1 }
-rust_2018_idioms = { level = "deny", priority = -1 }
-future_incompatible = { level = "deny", priority = -1 }
+warnings = "deny"
 
 [lints.clippy]
-correctness = { level = "deny", priority = -1 }
-suspicious = { level = "deny", priority = -1 }
-style = { level = "deny", priority = -1 }
-complexity = { level = "deny", priority = -1 }
-perf = { level = "deny", priority = -1 }
+all = "deny"
 
 [lints.rustdoc]
-all = { level = "deny", priority = -1 }
+all = "deny"

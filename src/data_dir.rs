@@ -1,7 +1,7 @@
 //! Data Directory structures and parsing.
 
 use crate::prelude::*;
-use crate::reader::Reader;
+use crate::reader::ReadAt;
 use crate::{Error, Result};
 
 /// Data directory type - type-safe enum for data directory indices.
@@ -153,18 +153,29 @@ impl DataDirectory {
         self.virtual_address != 0 || self.size != 0
     }
 
-    /// Parse a data directory from a Reader at the given offset.
-    pub fn read_from<R: Reader>(reader: &R, offset: u64) -> Result<Self> {
+    /// Parse a data directory from a positional reader at the given offset.
+    pub fn read_from<R: ReadAt>(reader: &R, offset: u64) -> Result<Self> {
         let mut buf = [0u8; Self::SIZE];
         reader.read_exact_at(offset, &mut buf)?;
         Self::parse(&buf)
     }
 
-    /// Read multiple data directories from a Reader.
-    pub fn read_directories<R: Reader>(reader: &R, offset: u64, count: usize) -> Result<Vec<Self>> {
+    /// Read multiple data directories from a positional reader.
+    pub fn read_directories<R: ReadAt>(reader: &R, offset: u64, count: usize) -> Result<Vec<Self>> {
+        count
+            .checked_mul(Self::SIZE)
+            .ok_or_else(|| Error::invalid_data_directory("data-directory table size overflow"))?;
         let mut dirs = Vec::with_capacity(count);
         for i in 0..count {
-            let dir_offset = offset + (i * Self::SIZE) as u64;
+            let relative = i
+                .checked_mul(Self::SIZE)
+                .and_then(|value| u64::try_from(value).ok())
+                .ok_or_else(|| {
+                    Error::invalid_data_directory("data-directory table offset overflow")
+                })?;
+            let dir_offset = offset.checked_add(relative).ok_or_else(|| {
+                Error::invalid_data_directory("data-directory table offset overflow")
+            })?;
             dirs.push(Self::read_from(reader, dir_offset)?);
         }
         Ok(dirs)

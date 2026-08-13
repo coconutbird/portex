@@ -6,9 +6,10 @@
 //! # Examples
 //!
 //! ```no_run
-//! use portex::PE;
+//! use portex::PeImage;
 //!
-//! let pe = PE::from_file("example.exe")?;
+//! # let file_bytes: &[u8] = &[];
+//! let pe = PeImage::parse(file_bytes)?;
 //!
 //! let delay_imports = pe.delay_imports()?;
 //! for dll in &delay_imports.dlls {
@@ -72,8 +73,17 @@ impl DelayLoadDescriptor {
         let unload_information_table_rva = read_u32(24);
         let time_date_stamp = read_u32(28);
 
-        // Null terminator check
-        if dll_name_rva == 0 {
+        // The terminator is an entirely zero descriptor. A partially-zero
+        // descriptor is malformed data, not an early end marker.
+        if attributes == 0
+            && dll_name_rva == 0
+            && module_handle_rva == 0
+            && import_address_table_rva == 0
+            && import_name_table_rva == 0
+            && bound_import_address_table_rva == 0
+            && unload_information_table_rva == 0
+            && time_date_stamp == 0
+        {
             return Ok(None);
         }
 
@@ -88,10 +98,16 @@ impl DelayLoadDescriptor {
             time_date_stamp,
         }))
     }
+
+    /// Whether descriptor pointer fields are RVAs (the modern format).
+    #[must_use]
+    pub fn uses_rvas(&self) -> bool {
+        self.attributes & 1 != 0
+    }
 }
 
 /// A delay-load import entry (function to import).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DelayImportThunk {
     /// Import by ordinal.
     Ordinal(u16),
@@ -105,7 +121,7 @@ pub enum DelayImportThunk {
 }
 
 /// A delay-loaded DLL with its descriptor, name, and imports.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DelayLoadedDll {
     /// The raw descriptor.
     pub descriptor: DelayLoadDescriptor,
@@ -116,7 +132,7 @@ pub struct DelayLoadedDll {
 }
 
 /// Delay-load import directory.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DelayImportDirectory {
     /// List of delay-loaded DLLs.
     pub dlls: Vec<DelayLoadedDll>,
@@ -133,21 +149,113 @@ impl DelayImportDirectory {
     where
         F: Fn(u32, usize) -> Option<Vec<u8>>,
     {
+        Self::parse_bounded(rva, None, 0, is_64bit, read_fn)
+    }
+
+    /// Parse delay imports, converting legacy VA-based descriptors with an
+    /// explicit preferred or runtime image base.
+    pub fn parse_with_image_base<F>(
+        rva: u32,
+        image_base: u64,
+        is_64bit: bool,
+        read_fn: F,
+    ) -> Result<Self>
+    where
+        F: Fn(u32, usize) -> Option<Vec<u8>>,
+    {
+        Self::parse_bounded(rva, None, image_base, is_64bit, read_fn)
+    }
+
+    /// Parse delay imports while bounding descriptor reads to the declared
+    /// data-directory size.
+    pub fn parse_sized_with_image_base<F>(
+        rva: u32,
+        size: u32,
+        image_base: u64,
+        is_64bit: bool,
+        read_fn: F,
+    ) -> Result<Self>
+    where
+        F: Fn(u32, usize) -> Option<Vec<u8>>,
+    {
+        if size < DelayLoadDescriptor::SIZE as u32 {
+            return Err(Error::invalid_data_directory(format!(
+                "delay-import directory is {} bytes, expected at least {}",
+                size,
+                DelayLoadDescriptor::SIZE
+            )));
+        }
+        Self::parse_bounded(rva, Some(size), image_base, is_64bit, read_fn)
+    }
+
+    fn parse_bounded<F>(
+        rva: u32,
+        directory_size: Option<u32>,
+        image_base: u64,
+        is_64bit: bool,
+        read_fn: F,
+    ) -> Result<Self>
+    where
+        F: Fn(u32, usize) -> Option<Vec<u8>>,
+    {
         let mut dlls = Vec::new();
         let mut offset = 0u32;
         let thunk_size = if is_64bit { 8 } else { 4 };
 
-        loop {
-            let desc_data = read_fn(rva + offset, DelayLoadDescriptor::SIZE)
-                .ok_or_else(|| Error::invalid_rva(rva + offset))?;
+        for _ in 0..65_536 {
+            if let Some(size) = directory_size {
+                let end = offset
+                    .checked_add(DelayLoadDescriptor::SIZE as u32)
+                    .ok_or_else(|| {
+                        Error::invalid_data_directory("delay-import descriptor range overflow")
+                    })?;
+                if end > size {
+                    return Err(Error::invalid_data_directory(
+                        "delay-import descriptor table is missing a terminator within its directory",
+                    ));
+                }
+            }
+            let descriptor_rva = rva.checked_add(offset).ok_or_else(|| {
+                Error::invalid_data_directory("delay-import descriptor RVA overflow")
+            })?;
+            let desc_data = read_fn(descriptor_rva, DelayLoadDescriptor::SIZE)
+                .ok_or_else(|| Error::invalid_rva(descriptor_rva))?;
 
             match DelayLoadDescriptor::parse(&desc_data)? {
-                Some(desc) => {
+                Some(mut desc) => {
+                    if desc.attributes & !1 != 0 {
+                        return Err(Error::invalid_data_directory(format!(
+                            "delay-import descriptor has reserved attributes {:#x}",
+                            desc.attributes
+                        )));
+                    }
+                    if !desc.uses_rvas() {
+                        desc.dll_name_rva = va_field_to_rva(desc.dll_name_rva, image_base)?;
+                        desc.module_handle_rva =
+                            va_field_to_rva(desc.module_handle_rva, image_base)?;
+                        desc.import_address_table_rva =
+                            va_field_to_rva(desc.import_address_table_rva, image_base)?;
+                        desc.import_name_table_rva =
+                            va_field_to_rva(desc.import_name_table_rva, image_base)?;
+                        desc.bound_import_address_table_rva =
+                            va_field_to_rva(desc.bound_import_address_table_rva, image_base)?;
+                        desc.unload_information_table_rva =
+                            va_field_to_rva(desc.unload_information_table_rva, image_base)?;
+                    }
+                    if desc.dll_name_rva == 0 {
+                        return Err(Error::invalid_data_directory(
+                            "non-null delay-import descriptor has no DLL name",
+                        ));
+                    }
+
                     // Resolve DLL name
                     let name = if desc.dll_name_rva != 0 {
-                        read_fn(desc.dll_name_rva, 256)
-                            .map(|data| read_cstring(&data))
-                            .unwrap_or_default()
+                        crate::parse_utils::read_c_string(
+                            &read_fn,
+                            desc.dll_name_rva,
+                            256,
+                            "delay-import DLL name",
+                        )?
                     } else {
                         String::new()
                     };
@@ -158,20 +266,28 @@ impl DelayImportDirectory {
                         is_64bit,
                         thunk_size,
                         &read_fn,
-                    );
+                    )?;
 
                     dlls.push(DelayLoadedDll {
                         descriptor: desc,
                         name,
                         imports,
                     });
-                    offset += DelayLoadDescriptor::SIZE as u32;
+                    offset = offset
+                        .checked_add(DelayLoadDescriptor::SIZE as u32)
+                        .ok_or_else(|| {
+                            Error::invalid_data_directory(
+                                "delay-import descriptor table size overflow",
+                            )
+                        })?;
                 }
-                None => break,
+                None => return Ok(Self { dlls }),
             }
         }
 
-        Ok(Self { dlls })
+        Err(Error::invalid_data_directory(
+            "delay-import descriptor table is missing a terminator",
+        ))
     }
 
     fn parse_thunks<F>(
@@ -179,13 +295,13 @@ impl DelayImportDirectory {
         is_64bit: bool,
         thunk_size: usize,
         read_fn: &F,
-    ) -> Vec<DelayImportThunk>
+    ) -> Result<Vec<DelayImportThunk>>
     where
         F: Fn(u32, usize) -> Option<Vec<u8>>,
     {
         let mut imports = Vec::new();
         if int_rva == 0 {
-            return imports;
+            return Ok(imports);
         }
 
         let mut thunk_offset = 0u32;
@@ -195,7 +311,16 @@ impl DelayImportDirectory {
             0x8000_0000
         };
 
-        while let Some(thunk_data) = read_fn(int_rva + thunk_offset, thunk_size) {
+        for _ in 0..1_048_576 {
+            let thunk_rva = int_rva
+                .checked_add(thunk_offset)
+                .ok_or_else(|| Error::invalid_data_directory("delay-import thunk RVA overflow"))?;
+            let thunk_data = crate::parse_utils::read_exact_rva(
+                read_fn,
+                thunk_rva,
+                thunk_size,
+                "delay-import thunk",
+            )?;
             let thunk_value: u64 = if is_64bit {
                 u64::from_le_bytes([
                     thunk_data[0],
@@ -214,33 +339,77 @@ impl DelayImportDirectory {
 
             // Null terminator
             if thunk_value == 0 {
-                break;
+                return Ok(imports);
             }
 
             // Check if import by ordinal
             if thunk_value & ordinal_flag != 0 {
+                let reserved_mask = if is_64bit {
+                    0x7fff_ffff_ffff_0000
+                } else {
+                    0x0000_0000_7fff_0000
+                };
+                if thunk_value & reserved_mask != 0 {
+                    return Err(Error::invalid_data_directory(
+                        "delay-import ordinal thunk has nonzero reserved bits",
+                    ));
+                }
                 imports.push(DelayImportThunk::Ordinal((thunk_value & 0xFFFF) as u16));
             } else {
                 // Import by name - thunk_value is RVA to hint/name
-                let hint_name_rva = thunk_value as u32;
-                if let Some(hint_name_data) = read_fn(hint_name_rva, 256) {
-                    let hint = u16::from_le_bytes([hint_name_data[0], hint_name_data[1]]);
-                    let name = read_cstring(&hint_name_data[2..]);
-                    imports.push(DelayImportThunk::Name { hint, name });
+                let hint_name_rva = u32::try_from(thunk_value).map_err(|_| {
+                    Error::invalid_data_directory(
+                        "delay-import hint/name address does not fit an RVA",
+                    )
+                })?;
+                if hint_name_rva == 0 {
+                    return Err(Error::invalid_data_directory(
+                        "named delay import has a null hint/name RVA",
+                    ));
                 }
+                let hint_name_data = crate::parse_utils::read_exact_rva(
+                    read_fn,
+                    hint_name_rva,
+                    2,
+                    "delay-import hint",
+                )?;
+                let hint = u16::from_le_bytes([hint_name_data[0], hint_name_data[1]]);
+                let name_rva = hint_name_rva.checked_add(2).ok_or_else(|| {
+                    Error::invalid_data_directory("delay-import hint/name RVA overflow")
+                })?;
+                let name = crate::parse_utils::read_c_string(
+                    read_fn,
+                    name_rva,
+                    256,
+                    "delay-import function name",
+                )?;
+                imports.push(DelayImportThunk::Name { hint, name });
             }
 
-            thunk_offset += thunk_size as u32;
+            thunk_offset = thunk_offset.checked_add(thunk_size as u32).ok_or_else(|| {
+                Error::invalid_data_directory("delay-import thunk table size overflow")
+            })?;
         }
 
-        imports
+        Err(Error::invalid_data_directory(
+            "delay-import thunk table is missing a terminator",
+        ))
     }
 }
 
-/// Read a null-terminated C string from a byte slice.
-fn read_cstring(data: &[u8]) -> String {
-    let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
-    String::from_utf8_lossy(&data[..end]).into_owned()
+fn va_field_to_rva(value: u32, image_base: u64) -> Result<u32> {
+    if value == 0 {
+        return Ok(0);
+    }
+    u64::from(value)
+        .checked_sub(image_base)
+        .and_then(|rva| u32::try_from(rva).ok())
+        .ok_or_else(|| {
+            Error::invalid_data_directory(format!(
+                "legacy delay-import VA {:#x} is outside image base {:#x}",
+                value, image_base
+            ))
+        })
 }
 
 /// Builder for serializing delay-load import tables.
@@ -260,50 +429,127 @@ impl DelayImportBuilder {
 
     /// Calculate the total size needed for the delay import data.
     pub fn calculate_size(&self, dlls: &[DelayLoadedDll]) -> usize {
+        self.try_calculate_size(dlls)
+            .expect("delay-import size overflow: use try_calculate_size()")
+    }
+
+    /// Calculate size with checked descriptor, thunk, handle, and name counts.
+    pub fn try_calculate_size(&self, dlls: &[DelayLoadedDll]) -> Result<usize> {
         if dlls.is_empty() {
-            return 0;
+            return Ok(0);
         }
 
         let thunk_size = if self.is_64bit { 8 } else { 4 };
 
         // Descriptors (one per DLL + null terminator)
-        let descriptors_size = (dlls.len() + 1) * DelayLoadDescriptor::SIZE;
+        let descriptors_size = dlls
+            .len()
+            .checked_add(1)
+            .and_then(|count| count.checked_mul(DelayLoadDescriptor::SIZE))
+            .ok_or_else(|| {
+                Error::invalid_data_directory("delay-import descriptor size overflow")
+            })?;
 
         // IAT and INT (both same size: thunks per DLL + null terminator each)
-        let mut thunks_count = 0;
+        let mut thunks_count = 0usize;
         for dll in dlls {
-            thunks_count += dll.imports.len() + 1; // +1 for null terminator
+            if dll.name.is_empty() || dll.name.as_bytes().contains(&0) {
+                return Err(Error::invalid_data_directory(
+                    "delay-import DLL names must be nonempty and contain no NUL bytes",
+                ));
+            }
+            thunks_count = thunks_count
+                .checked_add(dll.imports.len().checked_add(1).ok_or_else(|| {
+                    Error::invalid_data_directory("delay-import thunk count overflow")
+                })?)
+                .ok_or_else(|| {
+                    Error::invalid_data_directory("delay-import thunk count overflow")
+                })?;
         }
-        let iat_size = thunks_count * thunk_size;
+        let iat_size = thunks_count.checked_mul(thunk_size).ok_or_else(|| {
+            Error::invalid_data_directory("delay-import thunk table size overflow")
+        })?;
         let int_size = iat_size; // INT is same size as IAT
 
         // Module handles (one HMODULE pointer per DLL)
-        let handles_size = dlls.len() * thunk_size;
+        let handles_size = dlls
+            .len()
+            .checked_mul(thunk_size)
+            .ok_or_else(|| Error::invalid_data_directory("delay-import handle size overflow"))?;
 
         // Hint/Name entries
-        let mut hint_names_size = 0;
+        let mut hint_names_size = 0usize;
         for dll in dlls {
             for import in &dll.imports {
                 if let DelayImportThunk::Name { name, .. } = import {
+                    if name.is_empty() || name.as_bytes().contains(&0) {
+                        return Err(Error::invalid_data_directory(
+                            "delay-import names must be nonempty and contain no NUL bytes",
+                        ));
+                    }
                     // 2 bytes hint + name + null terminator + padding to even
-                    let entry_size = 2 + name.len() + 1;
-                    hint_names_size += (entry_size + 1) & !1;
+                    let entry_size = name.len().checked_add(3).ok_or_else(|| {
+                        Error::invalid_data_directory("delay-import name size overflow")
+                    })?;
+                    let aligned = entry_size.checked_add(1).ok_or_else(|| {
+                        Error::invalid_data_directory("delay-import name alignment overflow")
+                    })? & !1;
+                    hint_names_size = hint_names_size.checked_add(aligned).ok_or_else(|| {
+                        Error::invalid_data_directory("delay-import names size overflow")
+                    })?;
                 }
             }
         }
 
         // DLL names
-        let mut dll_names_size = 0;
+        let mut dll_names_size = 0usize;
         for dll in dlls {
-            dll_names_size += dll.name.len() + 1;
+            dll_names_size = dll_names_size
+                .checked_add(dll.name.len().checked_add(1).ok_or_else(|| {
+                    Error::invalid_data_directory("delay-import DLL name size overflow")
+                })?)
+                .ok_or_else(|| {
+                    Error::invalid_data_directory("delay-import DLL names size overflow")
+                })?;
         }
 
-        descriptors_size + iat_size + int_size + handles_size + hint_names_size + dll_names_size
+        descriptors_size
+            .checked_add(iat_size)
+            .and_then(|size| size.checked_add(int_size))
+            .and_then(|size| size.checked_add(handles_size))
+            .and_then(|size| size.checked_add(hint_names_size))
+            .and_then(|size| size.checked_add(dll_names_size))
+            .ok_or_else(|| Error::invalid_data_directory("delay-import table size overflow"))
     }
 
     /// Build the delay import data.
     /// Returns (section_data, size).
     pub fn build(&self, dlls: &[DelayLoadedDll]) -> (Vec<u8>, u32) {
+        self.try_build(dlls)
+            .expect("delay-import build failed: use try_build() for fallible serialization")
+    }
+
+    /// Build a delay-import table with checked RVAs and sizes.
+    pub fn try_build(&self, dlls: &[DelayLoadedDll]) -> Result<(Vec<u8>, u32)> {
+        let total_size = self.try_calculate_size(dlls)?;
+        if total_size == 0 {
+            return Ok((Vec::new(), 0));
+        }
+        let total_size_u32 = u32::try_from(total_size)
+            .map_err(|_| Error::invalid_data_directory("delay-import table exceeds u32"))?;
+        let end = self
+            .base_rva
+            .checked_add(total_size_u32)
+            .ok_or_else(|| Error::invalid_data_directory("delay-import RVA range overflow"))?;
+        if !self.is_64bit && end > 0x8000_0000 {
+            return Err(Error::invalid_data_directory(
+                "PE32 delay-import RVAs would overlap the ordinal flag",
+            ));
+        }
+        Ok(self.build_unchecked(dlls))
+    }
+
+    fn build_unchecked(&self, dlls: &[DelayLoadedDll]) -> (Vec<u8>, u32) {
         if dlls.is_empty() {
             return (Vec::new(), 0);
         }

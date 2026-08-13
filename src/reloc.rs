@@ -8,9 +8,10 @@
 //! ## Listing relocations from a PE file
 //!
 //! ```no_run
-//! use portex::PE;
+//! use portex::PeImage;
 //!
-//! let pe = PE::from_file("example.exe")?;
+//! # let file_bytes: &[u8] = &[];
+//! let pe = PeImage::parse(file_bytes)?;
 //!
 //! let relocs = pe.relocations()?;
 //! for block in &relocs.blocks {
@@ -26,9 +27,10 @@
 //! ## Adding relocations to a PE file
 //!
 //! ```no_run
-//! use portex::{PE, RelocationTable, RelocationBlock, RelocationEntry, RelocationType};
+//! use portex::{PeImage, RelocationBlock, RelocationEntry, RelocationTable, RelocationType};
 //!
-//! let mut pe = PE::from_file("input.exe")?;
+//! # let file_bytes: &[u8] = &[];
+//! let mut pe = PeImage::parse(file_bytes)?;
 //!
 //! // Build relocation table by creating blocks directly
 //! let table = RelocationTable {
@@ -46,7 +48,8 @@
 //!
 //! // Update PE with relocations
 //! pe.update_relocations(table, None)?;
-//! pe.write_to_file("output.exe")?;
+//! let rebuilt = pe.try_build()?;
+//! assert!(!rebuilt.is_empty());
 //! # Ok::<(), portex::Error>(())
 //! ```
 
@@ -55,30 +58,31 @@ use crate::{Error, Result};
 
 /// Relocation types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
 pub enum RelocationType {
     /// No relocation (padding).
-    Absolute = 0,
+    Absolute,
     /// High 16 bits of 32-bit address.
-    High = 1,
+    High,
     /// Low 16 bits of 32-bit address.
-    Low = 2,
+    Low,
     /// Full 32-bit address (HIGHLOW).
-    HighLow = 3,
+    HighLow,
     /// High 16 bits adjusted for sign extension.
-    HighAdj = 4,
+    HighAdj,
     /// Machine-specific (type 5): MIPS JMPADDR, ARM MOV32, RISC-V HIGH20.
-    MachineSpecific5 = 5,
+    MachineSpecific5,
     /// Section index (reserved).
-    Section = 6,
+    Section,
     /// Machine-specific (type 7): REL32, THUMB MOV32, RISC-V LOW12I.
-    MachineSpecific7 = 7,
+    MachineSpecific7,
     /// RISC-V low 12 bits S-type.
-    RiscvLow12S = 8,
+    RiscvLow12S,
     /// MIPS 16-bit jump address.
-    MipsJmpAddr16 = 9,
+    MipsJmpAddr16,
     /// 64-bit address (DIR64).
-    Dir64 = 10,
+    Dir64,
+    /// Relocation type not known to this version of the crate.
+    Unknown(u8),
 }
 
 impl RelocationType {
@@ -96,7 +100,25 @@ impl RelocationType {
             8 => Self::RiscvLow12S,
             9 => Self::MipsJmpAddr16,
             10 => Self::Dir64,
-            _ => Self::Absolute, // Unknown types treated as padding
+            other => Self::Unknown(other & 0x0f),
+        }
+    }
+
+    /// Return the four-bit on-disk relocation code.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Absolute => 0,
+            Self::High => 1,
+            Self::Low => 2,
+            Self::HighLow => 3,
+            Self::HighAdj => 4,
+            Self::MachineSpecific5 => 5,
+            Self::Section => 6,
+            Self::MachineSpecific7 => 7,
+            Self::RiscvLow12S => 8,
+            Self::MipsJmpAddr16 => 9,
+            Self::Dir64 => 10,
+            Self::Unknown(value) => value & 0x0f,
         }
     }
 }
@@ -121,7 +143,7 @@ impl RelocationEntry {
 
     /// Convert to a 16-bit value.
     pub fn to_u16(&self) -> u16 {
-        ((self.reloc_type as u16) << 12) | (self.offset & 0x0FFF)
+        (u16::from(self.reloc_type.as_u8()) << 12) | (self.offset & 0x0FFF)
     }
 
     /// Check if this is a padding entry.
@@ -152,13 +174,26 @@ impl RelocationBlock {
         }
 
         let page_rva = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-        let block_size = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+        let block_size_raw = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+
+        let block_size = block_size_raw as usize;
+        if block_size < Self::HEADER_SIZE || !block_size.is_multiple_of(4) {
+            return Err(Error::invalid_data_directory(format!(
+                "invalid base-relocation block size {}",
+                block_size
+            )));
+        }
+        if !page_rva.is_multiple_of(0x1000) {
+            return Err(Error::invalid_data_directory(format!(
+                "base-relocation page RVA {page_rva:#x} is not 4-KiB aligned"
+            )));
+        }
 
         // Number of entries = (block_size - header_size) / 2
-        let num_entries = (block_size as usize - Self::HEADER_SIZE) / 2;
+        let num_entries = (block_size - Self::HEADER_SIZE) / 2;
 
-        if data.len() < block_size as usize {
-            return Err(Error::buffer_too_small(block_size as usize, data.len()));
+        if data.len() < block_size {
+            return Err(Error::buffer_too_small(block_size, data.len()));
         }
 
         let mut entries = Vec::with_capacity(num_entries);
@@ -170,35 +205,78 @@ impl RelocationBlock {
 
         Ok(Self {
             page_rva,
-            block_size,
+            block_size: block_size_raw,
             entries,
         })
     }
 
     /// Calculate the RVA for a specific entry.
     pub fn rva_for_entry(&self, entry: &RelocationEntry) -> u32 {
-        self.page_rva + entry.offset as u32
+        self.checked_rva_for_entry(entry).unwrap_or(u32::MAX)
+    }
+
+    /// Calculate an entry RVA without wrapping.
+    pub fn checked_rva_for_entry(&self, entry: &RelocationEntry) -> Option<u32> {
+        self.page_rva.checked_add(u32::from(entry.offset))
     }
 
     /// Serialize to bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let size = Self::HEADER_SIZE + self.entries.len() * 2;
+        self.try_to_bytes()
+            .expect("relocation block build failed: use try_to_bytes()")
+    }
+
+    /// Serialize a block with checked size and 12-bit offsets.
+    pub fn try_to_bytes(&self) -> Result<Vec<u8>> {
+        if !self.page_rva.is_multiple_of(0x1000) {
+            return Err(Error::invalid_data_directory(format!(
+                "base-relocation page RVA {:#x} is not 4-KiB aligned",
+                self.page_rva
+            )));
+        }
+        for entry in &self.entries {
+            if entry.offset > 0x0fff {
+                return Err(Error::invalid_data_directory(format!(
+                    "relocation offset {:#x} exceeds 12 bits",
+                    entry.offset
+                )));
+            }
+            if matches!(entry.reloc_type, RelocationType::Unknown(value) if value > 0x0f) {
+                return Err(Error::invalid_data_directory(
+                    "relocation type exceeds four bits",
+                ));
+            }
+            self.page_rva
+                .checked_add(u32::from(entry.offset))
+                .ok_or_else(|| {
+                    Error::invalid_data_directory("base-relocation target RVA overflow")
+                })?;
+        }
+        let entry_count = self.entries.len() + usize::from(!self.entries.len().is_multiple_of(2));
+        let size = entry_count
+            .checked_mul(2)
+            .and_then(|size| Self::HEADER_SIZE.checked_add(size))
+            .ok_or_else(|| Error::invalid_data_directory("relocation block size overflow"))?;
+        let size_u32 = u32::try_from(size)
+            .map_err(|_| Error::invalid_data_directory("relocation block exceeds u32"))?;
         let mut buf = vec![0u8; size];
 
         buf[0..4].copy_from_slice(&self.page_rva.to_le_bytes());
-        buf[4..8].copy_from_slice(&(size as u32).to_le_bytes());
+        buf[4..8].copy_from_slice(&size_u32.to_le_bytes());
 
         for (i, entry) in self.entries.iter().enumerate() {
             let offset = Self::HEADER_SIZE + i * 2;
             buf[offset..offset + 2].copy_from_slice(&entry.to_u16().to_le_bytes());
         }
+        // An odd entry count requires one IMAGE_REL_BASED_ABSOLUTE padding word;
+        // the zero-initialized buffer already contains it.
 
-        buf
+        Ok(buf)
     }
 }
 
 /// The complete relocation table.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RelocationTable {
     /// List of relocation blocks.
     pub blocks: Vec<RelocationBlock>,
@@ -217,24 +295,75 @@ impl RelocationTable {
         let mut offset = 0u32;
 
         while offset < reloc_size {
-            // Read block header
-            let data = read_at_rva(reloc_rva + offset, reloc_size as usize - offset as usize)
-                .ok_or(Error::invalid_rva(reloc_rva + offset))?;
-
-            if data.len() < RelocationBlock::HEADER_SIZE {
-                break;
+            let entry_rva = reloc_rva.checked_add(offset).ok_or_else(|| {
+                Error::invalid_data_directory("base-relocation table RVA overflow")
+            })?;
+            let remaining = reloc_size.checked_sub(offset).ok_or_else(|| {
+                Error::invalid_data_directory("base-relocation table size underflow")
+            })?;
+            if remaining < RelocationBlock::HEADER_SIZE as u32 {
+                let tail = crate::parse_utils::read_exact_rva(
+                    &read_at_rva,
+                    entry_rva,
+                    remaining as usize,
+                    "base-relocation tail",
+                )?;
+                if tail.iter().all(|byte| *byte == 0) {
+                    break;
+                }
+                return Err(Error::invalid_data_directory(
+                    "truncated base-relocation block header",
+                ));
             }
 
-            let page_rva = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-            let block_size = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+            let header = crate::parse_utils::read_exact_rva(
+                &read_at_rva,
+                entry_rva,
+                RelocationBlock::HEADER_SIZE,
+                "base-relocation block header",
+            )?;
 
-            // End of relocation table
-            if page_rva == 0 || block_size == 0 {
-                break;
+            let page_rva = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+            let block_size = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
+
+            // Some linkers pad the declared directory with an all-zero tail.
+            if page_rva == 0 && block_size == 0 {
+                let tail = crate::parse_utils::read_exact_rva(
+                    &read_at_rva,
+                    entry_rva,
+                    remaining as usize,
+                    "base-relocation zero tail",
+                )?;
+                if tail.iter().all(|byte| *byte == 0) {
+                    break;
+                }
+                return Err(Error::invalid_data_directory(
+                    "zero base-relocation block is followed by nonzero data",
+                ));
             }
+
+            if block_size > remaining {
+                return Err(Error::invalid_data_directory(format!(
+                    "base-relocation block size {block_size} exceeds {remaining} remaining bytes"
+                )));
+            }
+            let data = crate::parse_utils::read_exact_rva(
+                &read_at_rva,
+                entry_rva,
+                block_size as usize,
+                "base-relocation block",
+            )?;
 
             let block = RelocationBlock::parse(&data)?;
-            offset += block_size;
+            offset = offset.checked_add(block_size).ok_or_else(|| {
+                Error::invalid_data_directory("base-relocation table size overflow")
+            })?;
+            if offset > reloc_size {
+                return Err(Error::invalid_data_directory(format!(
+                    "base-relocation block extends past directory size {}",
+                    reloc_size
+                )));
+            }
             blocks.push(block);
         }
 
@@ -260,29 +389,44 @@ impl RelocationTable {
     /// `buffer` is the loaded image.
     /// `is_64bit` determines relocation size for DIR64 entries.
     pub fn apply(&self, buffer: &mut [u8], delta: i64, is_64bit: bool) {
+        let _ = self.try_apply(buffer, i128::from(delta), is_64bit);
+    }
+
+    /// Apply all supported base relocations and fail on malformed ranges or an
+    /// architecture-specific relocation that cannot be interpreted generically.
+    pub fn try_apply(&self, buffer: &mut [u8], delta: i128, is_64bit: bool) -> Result<usize> {
+        let mut applied = 0usize;
         for block in &self.blocks {
-            for entry in &block.entries {
+            let mut index = 0usize;
+            while index < block.entries.len() {
+                let entry = &block.entries[index];
                 if entry.is_padding() {
+                    index += 1;
                     continue;
                 }
 
-                let rva = block.rva_for_entry(entry) as usize;
-                if rva >= buffer.len() {
-                    continue;
-                }
+                let target_rva = block
+                    .page_rva
+                    .checked_add(u32::from(entry.offset))
+                    .ok_or_else(|| {
+                        Error::invalid_data_directory("base-relocation target RVA overflow")
+                    })?;
+                let rva = target_rva as usize;
 
                 match entry.reloc_type {
-                    RelocationType::HighLow if rva + 4 <= buffer.len() => {
+                    RelocationType::HighLow => {
+                        let end = checked_target_end(rva, 4, buffer.len(), target_rva)?;
                         let value = u32::from_le_bytes([
                             buffer[rva],
                             buffer[rva + 1],
                             buffer[rva + 2],
                             buffer[rva + 3],
                         ]);
-                        let new_value = (value as i64 + delta) as u32;
-                        buffer[rva..rva + 4].copy_from_slice(&new_value.to_le_bytes());
+                        let new_value = (i128::from(value) + delta) as u32;
+                        buffer[rva..end].copy_from_slice(&new_value.to_le_bytes());
                     }
-                    RelocationType::Dir64 if is_64bit && rva + 8 <= buffer.len() => {
+                    RelocationType::Dir64 if is_64bit => {
+                        let end = checked_target_end(rva, 8, buffer.len(), target_rva)?;
                         let value = u64::from_le_bytes([
                             buffer[rva],
                             buffer[rva + 1],
@@ -293,34 +437,78 @@ impl RelocationTable {
                             buffer[rva + 6],
                             buffer[rva + 7],
                         ]);
-                        let new_value = (value as i64 + delta) as u64;
-                        buffer[rva..rva + 8].copy_from_slice(&new_value.to_le_bytes());
+                        let new_value = (i128::from(value) + delta) as u64;
+                        buffer[rva..end].copy_from_slice(&new_value.to_le_bytes());
                     }
-                    RelocationType::High if rva + 2 <= buffer.len() => {
+                    RelocationType::High => {
+                        let end = checked_target_end(rva, 2, buffer.len(), target_rva)?;
                         let value = u16::from_le_bytes([buffer[rva], buffer[rva + 1]]);
-                        let full = (value as i64) << 16;
+                        let full = i128::from(value) << 16;
                         let new_full = full + delta;
                         let new_value = ((new_full >> 16) & 0xFFFF) as u16;
-                        buffer[rva..rva + 2].copy_from_slice(&new_value.to_le_bytes());
+                        buffer[rva..end].copy_from_slice(&new_value.to_le_bytes());
                     }
-                    RelocationType::Low if rva + 2 <= buffer.len() => {
+                    RelocationType::Low => {
+                        let end = checked_target_end(rva, 2, buffer.len(), target_rva)?;
                         let value = u16::from_le_bytes([buffer[rva], buffer[rva + 1]]);
-                        let new_value = ((value as i64 + delta) & 0xFFFF) as u16;
-                        buffer[rva..rva + 2].copy_from_slice(&new_value.to_le_bytes());
+                        let new_value = ((i128::from(value) + delta) & 0xFFFF) as u16;
+                        buffer[rva..end].copy_from_slice(&new_value.to_le_bytes());
                     }
-                    _ => {} // Other types not commonly used, or bounds-checked out
+                    RelocationType::HighAdj => {
+                        let end = checked_target_end(rva, 2, buffer.len(), target_rva)?;
+                        let adjustment = block.entries.get(index + 1).ok_or_else(|| {
+                            Error::invalid_data_directory(
+                                "HIGHADJ relocation is missing its adjustment word",
+                            )
+                        })?;
+                        let low = i128::from(adjustment.to_u16() as i16);
+                        let high =
+                            i128::from(u16::from_le_bytes([buffer[rva], buffer[rva + 1]])) << 16;
+                        let relocated = high + low + delta + 0x8000;
+                        let new_value = ((relocated >> 16) & 0xFFFF) as u16;
+                        buffer[rva..end].copy_from_slice(&new_value.to_le_bytes());
+                        index += 1;
+                    }
+                    RelocationType::Dir64 => {
+                        return Err(Error::invalid_data_directory(
+                            "DIR64 relocation appears in a PE32 image",
+                        ));
+                    }
+                    unsupported => {
+                        return Err(Error::invalid_data_directory(format!(
+                            "relocation type {:?} requires machine-specific handling",
+                            unsupported
+                        )));
+                    }
                 }
+                applied += 1;
+                index += 1;
             }
         }
+        Ok(applied)
     }
 
     /// Serialize to bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
+        self.try_to_bytes()
+            .expect("relocation table build failed: use try_to_bytes()")
+    }
+
+    /// Serialize each block with checked table-size arithmetic.
+    pub fn try_to_bytes(&self) -> Result<Vec<u8>> {
         let mut output = Vec::new();
         for block in &self.blocks {
-            output.extend(block.to_bytes());
+            let bytes = block.try_to_bytes()?;
+            output
+                .len()
+                .checked_add(bytes.len())
+                .and_then(|size| u32::try_from(size).ok())
+                .ok_or_else(|| {
+                    Error::invalid_data_directory("base-relocation table exceeds u32")
+                })?;
+            output.extend(bytes);
         }
-        output
+        Ok(output)
     }
 
     /// Calculate total size when serialized.
@@ -399,8 +587,24 @@ impl RelocationTable {
     /// Build relocation table bytes, normalizing a copy internally.
     /// Does not modify self.
     pub fn build(&self) -> Vec<u8> {
-        self.normalized().to_bytes()
+        self.try_build()
+            .expect("relocation build failed: use try_build() for fallible serialization")
     }
+
+    /// Build normalized relocation bytes with checked block/table sizes.
+    pub fn try_build(&self) -> Result<Vec<u8>> {
+        self.normalized().try_to_bytes()
+    }
+}
+
+fn checked_target_end(start: usize, width: usize, buffer_len: usize, rva: u32) -> Result<usize> {
+    let end = start
+        .checked_add(width)
+        .ok_or_else(|| Error::invalid_data_directory("relocation target range overflow"))?;
+    if end > buffer_len {
+        return Err(Error::invalid_rva(rva));
+    }
+    Ok(end)
 }
 
 /// Builder for relocation tables.

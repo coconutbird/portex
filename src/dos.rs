@@ -1,7 +1,7 @@
 //! DOS Header structures and parsing.
 
 use crate::prelude::*;
-use crate::reader::Reader;
+use crate::reader::ReadAt;
 use crate::{Error, Result};
 
 /// DOS "MZ" signature.
@@ -142,8 +142,8 @@ impl DosHeader {
         Ok(())
     }
 
-    /// Parse a DOS header from a Reader at the given offset.
-    pub fn read_from<R: Reader>(reader: &R, offset: u64) -> Result<Self> {
+    /// Parse a DOS header from a positional reader at the given offset.
+    pub fn read_from<R: ReadAt>(reader: &R, offset: u64) -> Result<Self> {
         let mut buf = [0u8; Self::SIZE];
         reader.read_exact_at(offset, &mut buf)?;
         Self::parse(&buf)

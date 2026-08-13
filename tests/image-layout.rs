@@ -1,10 +1,12 @@
+//! Raw and loader-mapped image-layout integration tests.
+
 use portex::{
-    BaseAddressReader, CoffHeader, ImageLayout, ImportTable, ImportThunk, MachineType, PE,
-    PEBuilder, PEHeaders, SectionHeader, SliceReader, Subsystem, section::characteristics,
+    BaseAddressReader, CoffHeader, ImportTable, ImportThunk, MachineType, PeBuilder, PeHeaders,
+    PeImage, SectionHeader, SliceReader, SourceLayout, Subsystem, section::characteristics,
 };
 
-fn build_test_pe() -> PE {
-    PEBuilder::new()
+fn build_test_pe() -> PeImage {
+    PeBuilder::new()
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
         .entry_point(0x1000)
@@ -22,7 +24,7 @@ fn build_test_pe() -> PE {
 }
 
 fn map_file_image(file: &[u8]) -> Vec<u8> {
-    let headers = PEHeaders::from_slice(file).expect("test PE headers should parse");
+    let headers = PeHeaders::from_slice(file).expect("test PE headers should parse");
     let mut mapped = vec![0u8; headers.optional_header.size_of_image() as usize];
 
     let headers_size = headers.optional_header.size_of_headers() as usize;
@@ -50,10 +52,10 @@ fn raw_and_mapped_images_produce_the_same_section_data() {
     let raw = source.build();
     let mapped = map_file_image(&raw);
 
-    let from_file_layout = PE::parse(&raw).expect("raw PE should parse");
+    let from_file_layout = PeImage::parse(&raw).expect("raw PE should parse");
     let from_explicit_file_layout =
-        PE::parse_with_layout(&raw, ImageLayout::File).expect("raw PE should parse");
-    let from_mapped_layout = PE::parse_mapped(&mapped).expect("mapped PE should parse");
+        PeImage::parse_with_layout(&raw, SourceLayout::File).expect("raw PE should parse");
+    let from_mapped_layout = PeImage::parse_mapped(&mapped).expect("mapped PE should parse");
 
     assert_eq!(
         from_file_layout.section_by_name(".text").unwrap().data,
@@ -74,7 +76,7 @@ fn raw_and_mapped_images_produce_the_same_section_data() {
 
 #[test]
 fn mapped_image_convenience_apis_parse_directories() {
-    let mut source = PEBuilder::new()
+    let mut source = PeBuilder::new()
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
         .entry_point(0x1000)
@@ -96,7 +98,7 @@ fn mapped_image_convenience_apis_parse_directories() {
 
     let raw = source.build();
     let mapped = map_file_image(&raw);
-    let parsed = PE::parse_mapped(&mapped).expect("mapped PE should parse");
+    let parsed = PeImage::parse_mapped(&mapped).expect("mapped PE should parse");
     let parsed_imports = parsed.imports().expect("mapped imports should parse");
 
     assert_eq!(parsed_imports.dlls.len(), 1);
@@ -106,7 +108,7 @@ fn mapped_image_convenience_apis_parse_directories() {
 #[test]
 fn mapped_images_include_virtual_zero_fill() {
     let mut raw = build_test_pe().build();
-    let headers = PEHeaders::from_slice(&raw).expect("raw headers should parse");
+    let headers = PeHeaders::from_slice(&raw).expect("raw headers should parse");
     let data_index = headers
         .section_headers
         .iter()
@@ -122,8 +124,8 @@ fn mapped_images_include_virtual_zero_fill() {
     raw[data_header_offset + 8..data_header_offset + 12].copy_from_slice(&0x300u32.to_le_bytes());
 
     let mapped = map_file_image(&raw);
-    let from_file = PE::parse(&raw).expect("raw PE should parse");
-    let from_mapped = PE::parse_mapped(&mapped).expect("mapped PE should parse");
+    let from_file = PeImage::parse(&raw).expect("raw PE should parse");
+    let from_mapped = PeImage::parse_mapped(&mapped).expect("mapped PE should parse");
     let data_rva = from_mapped
         .section_by_name(".data")
         .unwrap()
@@ -139,16 +141,16 @@ fn readers_and_rva_resolution_honor_the_selected_layout() {
     let source = build_test_pe();
     let raw = source.build();
     let mapped = map_file_image(&raw);
-    let headers = PEHeaders::from_slice(&raw).expect("raw headers should parse");
+    let headers = PeHeaders::from_slice(&raw).expect("raw headers should parse");
     let text = headers.section_by_name(".text").unwrap();
     let text_rva = text.virtual_address + 0x20;
 
     assert_eq!(
-        headers.rva_to_source_offset(text_rva, ImageLayout::File),
+        headers.rva_to_source_offset(text_rva, SourceLayout::File),
         Some(text.pointer_to_raw_data + 0x20)
     );
     assert_eq!(
-        headers.rva_to_source_offset(text_rva, ImageLayout::Mapped),
+        headers.rva_to_source_offset(text_rva, SourceLayout::Mapped),
         Some(text_rva)
     );
     assert_eq!(headers.rva_to_offset(0x40), Some(0x40));
@@ -156,13 +158,13 @@ fn readers_and_rva_resolution_honor_the_selected_layout() {
     let mut prefixed_image = vec![0xA5; 0x80];
     prefixed_image.extend_from_slice(&mapped);
     let reader = SliceReader::new(&prefixed_image);
-    let from_offset = PE::read_from(&reader, 0x80, ImageLayout::Mapped)
+    let from_offset = PeImage::read_from(&reader, 0x80, SourceLayout::Mapped)
         .expect("mapped PE at a reader offset should parse");
     assert_eq!(from_offset.read_at_rva(0x1000, 1), Some(&[0xCC][..]));
 
     // SAFETY: `mapped` remains alive and unchanged for the reader's entire use.
     let base_reader = unsafe { BaseAddressReader::new(mapped.as_ptr(), Some(mapped.len())) };
-    let from_base = PE::read_from(&base_reader, 0, ImageLayout::Mapped)
+    let from_base = PeImage::read_from(&base_reader, 0, SourceLayout::Mapped)
         .expect("mapped PE at a base address should parse");
     assert_eq!(from_base.read_at_rva(0x1000, 1), Some(&[0xCC][..]));
 }

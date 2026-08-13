@@ -6,9 +6,10 @@
 //! # Examples
 //!
 //! ```no_run
-//! use portex::PE;
+//! use portex::PeImage;
 //!
-//! let pe = PE::from_file("example.exe")?;
+//! # let file_bytes: &[u8] = &[];
+//! let pe = PeImage::parse(file_bytes)?;
 //!
 //! if let Some(bound) = pe.bound_imports()? {
 //!     for desc in &bound.descriptors {
@@ -27,7 +28,7 @@ use crate::prelude::*;
 use crate::{Error, Result};
 
 /// IMAGE_BOUND_FORWARDER_REF structure.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundForwarderRef {
     /// Timestamp of the forwarder DLL.
     pub time_date_stamp: u32,
@@ -59,7 +60,7 @@ impl BoundForwarderRef {
 }
 
 /// IMAGE_BOUND_IMPORT_DESCRIPTOR structure.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundImportDescriptor {
     /// Timestamp of the bound DLL.
     pub time_date_stamp: u32,
@@ -103,7 +104,7 @@ impl BoundImportDescriptor {
 }
 
 /// Bound import directory.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BoundImportDirectory {
     /// List of bound import descriptors.
     pub descriptors: Vec<BoundImportDescriptor>,
@@ -115,47 +116,100 @@ impl BoundImportDirectory {
         let mut descriptors = Vec::new();
         let mut offset = 0;
 
-        // Parse descriptors
-        while offset + BoundImportDescriptor::SIZE <= data.len() {
+        // Parse descriptors and their immediately-following forwarder records.
+        while offset < data.len() {
+            let descriptor_end = offset
+                .checked_add(BoundImportDescriptor::SIZE)
+                .ok_or_else(|| Error::invalid_data_directory("bound-import offset overflow"))?;
+            if descriptor_end > data.len() {
+                return Err(Error::invalid_data_directory(
+                    "truncated bound-import descriptor",
+                ));
+            }
             match BoundImportDescriptor::parse(&data[offset..])? {
                 Some(mut desc) => {
+                    if desc.offset_module_name == 0 {
+                        return Err(Error::invalid_data_directory(
+                            "bound-import descriptor has a zero module-name offset",
+                        ));
+                    }
                     // Resolve module name
                     let name_offset = desc.offset_module_name as usize;
-                    if name_offset < data.len() {
-                        desc.module_name = read_cstring(&data[name_offset..]);
-                    }
+                    desc.module_name = read_cstring(data.get(name_offset..).ok_or_else(|| {
+                        Error::invalid_data_directory("bound-import module name is out of range")
+                    })?)?;
 
                     // Parse forwarder refs
-                    let fwd_start = offset + BoundImportDescriptor::SIZE;
+                    let fwd_start = descriptor_end;
                     for i in 0..desc.number_of_module_forwarder_refs as usize {
-                        let fwd_offset = fwd_start + i * BoundForwarderRef::SIZE;
-                        if fwd_offset + BoundForwarderRef::SIZE <= data.len() {
-                            let mut fwd = BoundForwarderRef::parse(&data[fwd_offset..])?;
-                            let fwd_name_offset = fwd.offset_module_name as usize;
-                            if fwd_name_offset < data.len() {
-                                fwd.module_name = read_cstring(&data[fwd_name_offset..]);
-                            }
-                            desc.forwarder_refs.push(fwd);
+                        let relative = i.checked_mul(BoundForwarderRef::SIZE).ok_or_else(|| {
+                            Error::invalid_data_directory("bound-forwarder size overflow")
+                        })?;
+                        let fwd_offset = fwd_start.checked_add(relative).ok_or_else(|| {
+                            Error::invalid_data_directory("bound-forwarder offset overflow")
+                        })?;
+                        let fwd_end =
+                            fwd_offset
+                                .checked_add(BoundForwarderRef::SIZE)
+                                .ok_or_else(|| {
+                                    Error::invalid_data_directory("bound-forwarder range overflow")
+                                })?;
+                        let mut fwd = BoundForwarderRef::parse(
+                            data.get(fwd_offset..fwd_end).ok_or_else(|| {
+                                Error::invalid_data_directory("truncated bound-forwarder record")
+                            })?,
+                        )?;
+                        if fwd.reserved != 0 {
+                            return Err(Error::invalid_data_directory(
+                                "bound-forwarder reserved field must be zero",
+                            ));
                         }
+                        if fwd.offset_module_name == 0 {
+                            return Err(Error::invalid_data_directory(
+                                "bound-forwarder has a zero module-name offset",
+                            ));
+                        }
+                        let fwd_name_offset = fwd.offset_module_name as usize;
+                        fwd.module_name =
+                            read_cstring(data.get(fwd_name_offset..).ok_or_else(|| {
+                                Error::invalid_data_directory(
+                                    "bound-forwarder module name is out of range",
+                                )
+                            })?)?;
+                        desc.forwarder_refs.push(fwd);
                     }
 
                     // Skip past descriptor and its forwarder refs
                     offset = fwd_start
-                        + desc.number_of_module_forwarder_refs as usize * BoundForwarderRef::SIZE;
+                        .checked_add(
+                            (desc.number_of_module_forwarder_refs as usize)
+                                .checked_mul(BoundForwarderRef::SIZE)
+                                .ok_or_else(|| {
+                                    Error::invalid_data_directory("bound-forwarder size overflow")
+                                })?,
+                        )
+                        .ok_or_else(|| {
+                            Error::invalid_data_directory("bound-import offset overflow")
+                        })?;
                     descriptors.push(desc);
                 }
-                None => break,
+                None => return Ok(Self { descriptors }),
             }
         }
 
-        Ok(Self { descriptors })
+        Err(Error::invalid_data_directory(
+            "bound-import directory is missing a terminator",
+        ))
     }
 }
 
 /// Read a null-terminated C string from a byte slice.
-fn read_cstring(data: &[u8]) -> String {
-    let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
-    String::from_utf8_lossy(&data[..end]).into_owned()
+fn read_cstring(data: &[u8]) -> Result<String> {
+    let end = data
+        .iter()
+        .position(|&b| b == 0)
+        .ok_or_else(|| Error::invalid_data_directory("bound-import name is not null-terminated"))?;
+    String::from_utf8(data[..end].to_vec()).map_err(|_| Error::invalid_utf8())
 }
 
 /// Builder for serializing bound import tables.
@@ -170,37 +224,79 @@ impl BoundImportBuilder {
 
     /// Calculate the total size needed for the bound import data.
     pub fn calculate_size(&self, directory: &BoundImportDirectory) -> usize {
+        self.try_calculate_size(directory)
+            .expect("bound-import size overflow: use try_calculate_size()")
+    }
+
+    /// Calculate the size and validate u16-relative name offsets/counts.
+    pub fn try_calculate_size(&self, directory: &BoundImportDirectory) -> Result<usize> {
         if directory.descriptors.is_empty() {
-            return 0;
+            return Ok(0);
         }
 
         // Descriptors + forwarder refs + null terminator
         let mut desc_size = BoundImportDescriptor::SIZE; // null terminator
         for desc in &directory.descriptors {
-            desc_size += BoundImportDescriptor::SIZE;
-            desc_size += desc.forwarder_refs.len() * BoundForwarderRef::SIZE;
+            u16::try_from(desc.forwarder_refs.len())
+                .map_err(|_| Error::invalid_data_directory("bound-forwarder count exceeds u16"))?;
+            if desc
+                .forwarder_refs
+                .iter()
+                .any(|forwarder| forwarder.reserved != 0)
+            {
+                return Err(Error::invalid_data_directory(
+                    "bound-forwarder reserved field must be zero",
+                ));
+            }
+            desc_size = desc_size
+                .checked_add(BoundImportDescriptor::SIZE)
+                .and_then(|size| {
+                    desc.forwarder_refs
+                        .len()
+                        .checked_mul(BoundForwarderRef::SIZE)
+                        .and_then(|forwarders| size.checked_add(forwarders))
+                })
+                .ok_or_else(|| {
+                    Error::invalid_data_directory("bound-import descriptor size overflow")
+                })?;
         }
 
         // Module names (null-terminated strings)
-        let mut names_size = 0;
+        let mut names_size = 0usize;
         for desc in &directory.descriptors {
-            names_size += desc.module_name.len() + 1; // +1 for null terminator
+            names_size = checked_bound_name_size(names_size, &desc.module_name)?;
             for fwd in &desc.forwarder_refs {
-                names_size += fwd.module_name.len() + 1;
+                names_size = checked_bound_name_size(names_size, &fwd.module_name)?;
             }
         }
 
-        desc_size + names_size
+        let total = desc_size
+            .checked_add(names_size)
+            .ok_or_else(|| Error::invalid_data_directory("bound-import size overflow"))?;
+        if total > usize::from(u16::MAX) {
+            return Err(Error::invalid_data_directory(
+                "bound-import directory exceeds its u16 name-offset format",
+            ));
+        }
+        Ok(total)
     }
 
     /// Build the bound import data.
     /// Returns (data, size).
     pub fn build(&self, directory: &BoundImportDirectory) -> (Vec<u8>, u32) {
+        self.try_build(directory)
+            .expect("bound-import build failed: use try_build() for fallible serialization")
+    }
+
+    /// Build a bound-import directory with checked relative offsets.
+    pub fn try_build(&self, directory: &BoundImportDirectory) -> Result<(Vec<u8>, u32)> {
         if directory.descriptors.is_empty() {
-            return (Vec::new(), 0);
+            return Ok((Vec::new(), 0));
         }
 
-        let total_size = self.calculate_size(directory);
+        let total_size = self.try_calculate_size(directory)?;
+        let total_size_u32 = u32::try_from(total_size)
+            .map_err(|_| Error::invalid_data_directory("bound-import data exceeds u32"))?;
         let mut data = vec![0u8; total_size];
 
         // Calculate where strings start (after all descriptors + forwarders + null terminator)
@@ -215,11 +311,18 @@ impl BoundImportBuilder {
         let mut offset = 0;
         for desc in &directory.descriptors {
             // Write descriptor
-            let name_offset = current_string_offset as u16;
+            let name_offset = u16::try_from(current_string_offset).map_err(|_| {
+                Error::invalid_data_directory("bound-import name offset exceeds u16")
+            })?;
             data[offset..offset + 4].copy_from_slice(&desc.time_date_stamp.to_le_bytes());
             data[offset + 4..offset + 6].copy_from_slice(&name_offset.to_le_bytes());
-            data[offset + 6..offset + 8]
-                .copy_from_slice(&(desc.forwarder_refs.len() as u16).to_le_bytes());
+            data[offset + 6..offset + 8].copy_from_slice(
+                &u16::try_from(desc.forwarder_refs.len())
+                    .map_err(|_| {
+                        Error::invalid_data_directory("bound-forwarder count exceeds u16")
+                    })?
+                    .to_le_bytes(),
+            );
             offset += BoundImportDescriptor::SIZE;
 
             // Write module name
@@ -230,7 +333,9 @@ impl BoundImportBuilder {
 
             // Write forwarder refs
             for fwd in &desc.forwarder_refs {
-                let fwd_name_offset = current_string_offset as u16;
+                let fwd_name_offset = u16::try_from(current_string_offset).map_err(|_| {
+                    Error::invalid_data_directory("bound-forwarder name offset exceeds u16")
+                })?;
                 data[offset..offset + 4].copy_from_slice(&fwd.time_date_stamp.to_le_bytes());
                 data[offset + 4..offset + 6].copy_from_slice(&fwd_name_offset.to_le_bytes());
                 data[offset + 6..offset + 8].copy_from_slice(&fwd.reserved.to_le_bytes());
@@ -246,8 +351,23 @@ impl BoundImportBuilder {
 
         // Null terminator descriptor is already zeros
 
-        (data, total_size as u32)
+        Ok((data, total_size_u32))
     }
+}
+
+fn checked_bound_name_size(current: usize, name: &str) -> Result<usize> {
+    if name.is_empty() || name.as_bytes().contains(&0) {
+        return Err(Error::invalid_data_directory(
+            "bound-import module names must be nonempty and contain no NUL bytes",
+        ));
+    }
+    current
+        .checked_add(
+            name.len()
+                .checked_add(1)
+                .ok_or_else(|| Error::invalid_data_directory("bound-import name size overflow"))?,
+        )
+        .ok_or_else(|| Error::invalid_data_directory("bound-import names size overflow"))
 }
 
 #[cfg(test)]

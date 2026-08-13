@@ -2,7 +2,7 @@
 
 use crate::data_dir::DataDirectory;
 use crate::prelude::*;
-use crate::reader::Reader;
+use crate::reader::ReadAt;
 use crate::{Error, Result};
 
 /// PE32 magic number.
@@ -154,9 +154,17 @@ impl OptionalHeader32 {
             return Err(Error::buffer_too_small(Self::BASE_SIZE, data.len()));
         }
 
+        let magic = u16::from_le_bytes([data[0], data[1]]);
+        if magic != PE32_MAGIC {
+            return Err(Error::invalid_optional_header_magic(magic));
+        }
         let number_of_rva_and_sizes = u32::from_le_bytes([data[92], data[93], data[94], data[95]]);
-        let dirs_count = number_of_rva_and_sizes as usize;
-        let total_size = Self::BASE_SIZE + dirs_count * DataDirectory::SIZE;
+        let dirs_count = usize::try_from(number_of_rva_and_sizes)
+            .map_err(|_| Error::invalid_data_directory("data-directory count is too large"))?;
+        let total_size = dirs_count
+            .checked_mul(DataDirectory::SIZE)
+            .and_then(|size| Self::BASE_SIZE.checked_add(size))
+            .ok_or_else(|| Error::invalid_data_directory("optional-header size overflow"))?;
 
         if data.len() < total_size {
             return Err(Error::buffer_too_small(total_size, data.len()));
@@ -169,7 +177,7 @@ impl OptionalHeader32 {
         }
 
         Ok(Self {
-            magic: u16::from_le_bytes([data[0], data[1]]),
+            magic,
             major_linker_version: data[2],
             minor_linker_version: data[3],
             size_of_code: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
@@ -273,10 +281,18 @@ impl OptionalHeader64 {
             return Err(Error::buffer_too_small(Self::BASE_SIZE, data.len()));
         }
 
+        let magic = u16::from_le_bytes([data[0], data[1]]);
+        if magic != PE32PLUS_MAGIC {
+            return Err(Error::invalid_optional_header_magic(magic));
+        }
         let number_of_rva_and_sizes =
             u32::from_le_bytes([data[108], data[109], data[110], data[111]]);
-        let dirs_count = number_of_rva_and_sizes as usize;
-        let total_size = Self::BASE_SIZE + dirs_count * DataDirectory::SIZE;
+        let dirs_count = usize::try_from(number_of_rva_and_sizes)
+            .map_err(|_| Error::invalid_data_directory("data-directory count is too large"))?;
+        let total_size = dirs_count
+            .checked_mul(DataDirectory::SIZE)
+            .and_then(|size| Self::BASE_SIZE.checked_add(size))
+            .ok_or_else(|| Error::invalid_data_directory("optional-header size overflow"))?;
 
         if data.len() < total_size {
             return Err(Error::buffer_too_small(total_size, data.len()));
@@ -289,7 +305,7 @@ impl OptionalHeader64 {
         }
 
         Ok(Self {
-            magic: u16::from_le_bytes([data[0], data[1]]),
+            magic,
             major_linker_version: data[2],
             minor_linker_version: data[3],
             size_of_code: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
@@ -453,8 +469,8 @@ impl OptionalHeader {
         }
     }
 
-    /// Parse an optional header from a Reader at the given offset.
-    pub fn read_from<R: Reader>(reader: &R, offset: u64) -> Result<Self> {
+    /// Parse an optional header from a positional reader at the given offset.
+    pub fn read_from<R: ReadAt>(reader: &R, offset: u64) -> Result<Self> {
         // First read the magic to determine type
         let magic = reader.read_u16_at(offset)?;
 
@@ -466,14 +482,74 @@ impl OptionalHeader {
         };
 
         // Read the base header to get number of data directories
-        let num_dirs_offset = match magic {
-            PE32_MAGIC => offset + 92, // Offset of number_of_rva_and_sizes in PE32
-            PE32PLUS_MAGIC => offset + 108, // Offset in PE32+
+        let count_relative = match magic {
+            PE32_MAGIC => 92,      // Offset of number_of_rva_and_sizes in PE32
+            PE32PLUS_MAGIC => 108, // Offset in PE32+
             _ => unreachable!(),
         };
+        let num_dirs_offset = offset
+            .checked_add(count_relative)
+            .ok_or_else(|| Error::invalid_data_directory("optional-header offset overflow"))?;
         let num_dirs = reader.read_u32_at(num_dirs_offset)? as usize;
 
-        let total_size = base_size + num_dirs * DataDirectory::SIZE;
+        let total_size = num_dirs
+            .checked_mul(DataDirectory::SIZE)
+            .and_then(|size| base_size.checked_add(size))
+            .ok_or_else(|| Error::invalid_data_directory("optional-header size overflow"))?;
+        if total_size > usize::from(u16::MAX) {
+            return Err(Error::invalid_data_directory(
+                "optional header cannot fit the COFF u16 size field",
+            ));
+        }
+        let data = reader.read_bytes_at(offset, total_size)?;
+        Self::parse(&data)
+    }
+
+    /// Parse an optional header without reading beyond the size declared by the
+    /// COFF image header.
+    ///
+    /// PE consumers must use the declared optional-header size to locate the
+    /// section table. This method also verifies that
+    /// `NumberOfRvaAndSizes` fits in that declared region, preventing malformed
+    /// files from making the parser consume section headers as data-directory
+    /// entries.
+    pub fn read_sized_from<R: ReadAt>(
+        reader: &R,
+        offset: u64,
+        declared_size: usize,
+    ) -> Result<Self> {
+        if declared_size < 2 {
+            return Err(Error::buffer_too_small(2, declared_size));
+        }
+
+        let magic = reader.read_u16_at(offset)?;
+        let (base_size, count_offset) = match magic {
+            PE32_MAGIC => (OptionalHeader32::BASE_SIZE, 92u64),
+            PE32PLUS_MAGIC => (OptionalHeader64::BASE_SIZE, 108u64),
+            _ => return Err(Error::invalid_optional_header_magic(magic)),
+        };
+        if declared_size < base_size {
+            return Err(Error::buffer_too_small(base_size, declared_size));
+        }
+
+        let count_address = offset
+            .checked_add(count_offset)
+            .ok_or_else(|| Error::invalid_data_directory("optional-header offset overflow"))?;
+        let num_dirs = usize::try_from(reader.read_u32_at(count_address)?)
+            .map_err(|_| Error::invalid_data_directory("data-directory count is too large"))?;
+        let directories_size = num_dirs
+            .checked_mul(DataDirectory::SIZE)
+            .ok_or_else(|| Error::invalid_data_directory("data-directory size overflow"))?;
+        let total_size = base_size
+            .checked_add(directories_size)
+            .ok_or_else(|| Error::invalid_data_directory("optional-header size overflow"))?;
+        if total_size > declared_size {
+            return Err(Error::invalid_data_directory(format!(
+                "{} data directories require {} optional-header bytes, but COFF declares {}",
+                num_dirs, total_size, declared_size
+            )));
+        }
+
         let data = reader.read_bytes_at(offset, total_size)?;
         Self::parse(&data)
     }

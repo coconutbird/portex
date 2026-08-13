@@ -60,13 +60,15 @@ pub struct LoadConfigDirectory32 {
     pub guard_cf_function_count: u32,
     /// CFG flags.
     pub guard_flags: u32,
+    /// Bytes in the versioned structure beyond the fields understood here.
+    pub trailing_data: Vec<u8>,
 }
 
 impl LoadConfigDirectory32 {
     /// Minimum size for basic parsing.
     pub const MIN_SIZE: usize = 64;
-    /// Size with CFG fields.
-    pub const SIZE_WITH_CFG: usize = 104;
+    /// Size through `GuardFlags`; later versioned fields are preserved opaquely.
+    pub const SIZE_WITH_CFG: usize = 92;
 
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::MIN_SIZE {
@@ -74,6 +76,15 @@ impl LoadConfigDirectory32 {
         }
 
         let size = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        let declared_size = if size == 0 { data.len() } else { size as usize };
+        if declared_size < Self::MIN_SIZE || declared_size > data.len() {
+            return Err(Error::invalid_data_directory(format!(
+                "load-config size {} is outside the available {} bytes",
+                declared_size,
+                data.len()
+            )));
+        }
+        let data = &data[..declared_size];
         let mut config = Self {
             size,
             time_date_stamp: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
@@ -93,8 +104,8 @@ impl LoadConfigDirectory32 {
             lock_prefix_table: u32::from_le_bytes([data[32], data[33], data[34], data[35]]),
             maximum_allocation_size: u32::from_le_bytes([data[36], data[37], data[38], data[39]]),
             virtual_memory_threshold: u32::from_le_bytes([data[40], data[41], data[42], data[43]]),
-            process_affinity_mask: u32::from_le_bytes([data[44], data[45], data[46], data[47]]),
-            process_heap_flags: u32::from_le_bytes([data[48], data[49], data[50], data[51]]),
+            process_heap_flags: u32::from_le_bytes([data[44], data[45], data[46], data[47]]),
+            process_affinity_mask: u32::from_le_bytes([data[48], data[49], data[50], data[51]]),
             csd_version: u16::from_le_bytes([data[52], data[53]]),
             dependent_load_flags: u16::from_le_bytes([data[54], data[55]]),
             edit_list: u32::from_le_bytes([data[56], data[57], data[58], data[59]]),
@@ -108,17 +119,29 @@ impl LoadConfigDirectory32 {
             config.se_handler_count = u32::from_le_bytes([data[68], data[69], data[70], data[71]]);
         }
 
-        // Parse CFG fields if present (offset 72-103)
-        if data.len() >= Self::SIZE_WITH_CFG {
+        // Parse each versioned CFG field that is present.
+        if data.len() >= 76 {
             config.guard_cf_check_function_pointer =
                 u32::from_le_bytes([data[72], data[73], data[74], data[75]]);
+        }
+        if data.len() >= 80 {
             config.guard_cf_dispatch_function_pointer =
                 u32::from_le_bytes([data[76], data[77], data[78], data[79]]);
+        }
+        if data.len() >= 84 {
             config.guard_cf_function_table =
                 u32::from_le_bytes([data[80], data[81], data[82], data[83]]);
+        }
+        if data.len() >= 88 {
             config.guard_cf_function_count =
                 u32::from_le_bytes([data[84], data[85], data[86], data[87]]);
+        }
+        if data.len() >= Self::SIZE_WITH_CFG {
             config.guard_flags = u32::from_le_bytes([data[88], data[89], data[90], data[91]]);
+        }
+
+        if data.len() > Self::SIZE_WITH_CFG {
+            config.trailing_data = data[Self::SIZE_WITH_CFG..].to_vec();
         }
 
         Ok(config)
@@ -126,10 +149,40 @@ impl LoadConfigDirectory32 {
 
     /// Serialize to bytes (up to the size field value).
     pub fn to_bytes(&self) -> Vec<u8> {
-        let output_size = (self.size as usize).max(Self::MIN_SIZE);
+        self.try_to_bytes()
+            .expect("load-config build failed: use try_to_bytes()")
+    }
+
+    /// Serialize with checked versioned/trailing size arithmetic.
+    pub fn try_to_bytes(&self) -> Result<Vec<u8>> {
+        let known_size = if self.guard_flags != 0 {
+            Self::SIZE_WITH_CFG
+        } else if self.guard_cf_function_count != 0 {
+            88
+        } else if self.guard_cf_function_table != 0 {
+            84
+        } else if self.guard_cf_dispatch_function_pointer != 0 {
+            80
+        } else if self.guard_cf_check_function_pointer != 0 {
+            76
+        } else if self.se_handler_table != 0 || self.se_handler_count != 0 {
+            72
+        } else {
+            Self::MIN_SIZE
+        };
+        let trailing_size = if self.trailing_data.is_empty() {
+            0
+        } else {
+            Self::SIZE_WITH_CFG
+                .checked_add(self.trailing_data.len())
+                .ok_or_else(|| Error::invalid_data_directory("load-config size overflow"))?
+        };
+        let output_size = (self.size as usize).max(known_size).max(trailing_size);
+        let encoded_size = u32::try_from(output_size)
+            .map_err(|_| Error::invalid_data_directory("load-config size exceeds u32"))?;
         let mut buf = vec![0u8; output_size];
 
-        buf[0..4].copy_from_slice(&self.size.to_le_bytes());
+        buf[0..4].copy_from_slice(&encoded_size.to_le_bytes());
         buf[4..8].copy_from_slice(&self.time_date_stamp.to_le_bytes());
         buf[8..10].copy_from_slice(&self.major_version.to_le_bytes());
         buf[10..12].copy_from_slice(&self.minor_version.to_le_bytes());
@@ -141,8 +194,8 @@ impl LoadConfigDirectory32 {
         buf[32..36].copy_from_slice(&self.lock_prefix_table.to_le_bytes());
         buf[36..40].copy_from_slice(&self.maximum_allocation_size.to_le_bytes());
         buf[40..44].copy_from_slice(&self.virtual_memory_threshold.to_le_bytes());
-        buf[44..48].copy_from_slice(&self.process_affinity_mask.to_le_bytes());
-        buf[48..52].copy_from_slice(&self.process_heap_flags.to_le_bytes());
+        buf[44..48].copy_from_slice(&self.process_heap_flags.to_le_bytes());
+        buf[48..52].copy_from_slice(&self.process_affinity_mask.to_le_bytes());
         buf[52..54].copy_from_slice(&self.csd_version.to_le_bytes());
         buf[54..56].copy_from_slice(&self.dependent_load_flags.to_le_bytes());
         buf[56..60].copy_from_slice(&self.edit_list.to_le_bytes());
@@ -153,15 +206,32 @@ impl LoadConfigDirectory32 {
             buf[68..72].copy_from_slice(&self.se_handler_count.to_le_bytes());
         }
 
-        if output_size >= Self::SIZE_WITH_CFG {
+        if output_size >= 76 {
             buf[72..76].copy_from_slice(&self.guard_cf_check_function_pointer.to_le_bytes());
+        }
+        if output_size >= 80 {
             buf[76..80].copy_from_slice(&self.guard_cf_dispatch_function_pointer.to_le_bytes());
+        }
+        if output_size >= 84 {
             buf[80..84].copy_from_slice(&self.guard_cf_function_table.to_le_bytes());
+        }
+        if output_size >= 88 {
             buf[84..88].copy_from_slice(&self.guard_cf_function_count.to_le_bytes());
+        }
+        if output_size >= Self::SIZE_WITH_CFG {
             buf[88..92].copy_from_slice(&self.guard_flags.to_le_bytes());
         }
 
-        buf
+        if output_size > Self::SIZE_WITH_CFG && !self.trailing_data.is_empty() {
+            let count = self
+                .trailing_data
+                .len()
+                .min(output_size - Self::SIZE_WITH_CFG);
+            buf[Self::SIZE_WITH_CFG..Self::SIZE_WITH_CFG + count]
+                .copy_from_slice(&self.trailing_data[..count]);
+        }
+
+        Ok(buf)
     }
 
     /// Check if CFG is enabled.
@@ -203,6 +273,8 @@ pub struct LoadConfigDirectory64 {
     pub guard_cf_function_table: u64,
     pub guard_cf_function_count: u64,
     pub guard_flags: u32,
+    /// Bytes in the versioned structure beyond the fields understood here.
+    pub trailing_data: Vec<u8>,
 }
 
 impl LoadConfigDirectory64 {
@@ -214,8 +286,19 @@ impl LoadConfigDirectory64 {
             return Err(Error::buffer_too_small(Self::MIN_SIZE, data.len()));
         }
 
+        let size = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        let declared_size = if size == 0 { data.len() } else { size as usize };
+        if declared_size < Self::MIN_SIZE || declared_size > data.len() {
+            return Err(Error::invalid_data_directory(format!(
+                "load-config size {} is outside the available {} bytes",
+                declared_size,
+                data.len()
+            )));
+        }
+        let data = &data[..declared_size];
+
         let mut config = Self {
-            size: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+            size,
             time_date_stamp: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
             major_version: u16::from_le_bytes([data[8], data[9]]),
             minor_version: u16::from_le_bytes([data[10], data[11]]),
@@ -261,35 +344,75 @@ impl LoadConfigDirectory64 {
             ..Default::default()
         };
 
-        // Parse CFG fields if present
-        if data.len() >= Self::SIZE_WITH_CFG {
+        // Parse each versioned CFG field that is present.
+        if data.len() >= 120 {
             config.guard_cf_check_function_pointer = u64::from_le_bytes([
                 data[112], data[113], data[114], data[115], data[116], data[117], data[118],
                 data[119],
             ]);
+        }
+        if data.len() >= 128 {
             config.guard_cf_dispatch_function_pointer = u64::from_le_bytes([
                 data[120], data[121], data[122], data[123], data[124], data[125], data[126],
                 data[127],
             ]);
+        }
+        if data.len() >= 136 {
             config.guard_cf_function_table = u64::from_le_bytes([
                 data[128], data[129], data[130], data[131], data[132], data[133], data[134],
                 data[135],
             ]);
+        }
+        if data.len() >= 144 {
             config.guard_cf_function_count = u64::from_le_bytes([
                 data[136], data[137], data[138], data[139], data[140], data[141], data[142],
                 data[143],
             ]);
+        }
+        if data.len() >= Self::SIZE_WITH_CFG {
             config.guard_flags = u32::from_le_bytes([data[144], data[145], data[146], data[147]]);
+        }
+
+        if data.len() > Self::SIZE_WITH_CFG {
+            config.trailing_data = data[Self::SIZE_WITH_CFG..].to_vec();
         }
 
         Ok(config)
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        let output_size = (self.size as usize).max(Self::MIN_SIZE);
+        self.try_to_bytes()
+            .expect("load-config build failed: use try_to_bytes()")
+    }
+
+    /// Serialize with checked versioned/trailing size arithmetic.
+    pub fn try_to_bytes(&self) -> Result<Vec<u8>> {
+        let known_size = if self.guard_flags != 0 {
+            Self::SIZE_WITH_CFG
+        } else if self.guard_cf_function_count != 0 {
+            144
+        } else if self.guard_cf_function_table != 0 {
+            136
+        } else if self.guard_cf_dispatch_function_pointer != 0 {
+            128
+        } else if self.guard_cf_check_function_pointer != 0 {
+            120
+        } else {
+            Self::MIN_SIZE
+        };
+        let trailing_size = if self.trailing_data.is_empty() {
+            0
+        } else {
+            Self::SIZE_WITH_CFG
+                .checked_add(self.trailing_data.len())
+                .ok_or_else(|| Error::invalid_data_directory("load-config size overflow"))?
+        };
+        let output_size = (self.size as usize).max(known_size).max(trailing_size);
+        let encoded_size = u32::try_from(output_size)
+            .map_err(|_| Error::invalid_data_directory("load-config size exceeds u32"))?;
         let mut buf = vec![0u8; output_size];
 
-        buf[0..4].copy_from_slice(&self.size.to_le_bytes());
+        buf[0..4].copy_from_slice(&encoded_size.to_le_bytes());
         buf[4..8].copy_from_slice(&self.time_date_stamp.to_le_bytes());
         buf[8..10].copy_from_slice(&self.major_version.to_le_bytes());
         buf[10..12].copy_from_slice(&self.minor_version.to_le_bytes());
@@ -310,15 +433,32 @@ impl LoadConfigDirectory64 {
         buf[96..104].copy_from_slice(&self.se_handler_table.to_le_bytes());
         buf[104..112].copy_from_slice(&self.se_handler_count.to_le_bytes());
 
-        if output_size >= Self::SIZE_WITH_CFG {
+        if output_size >= 120 {
             buf[112..120].copy_from_slice(&self.guard_cf_check_function_pointer.to_le_bytes());
+        }
+        if output_size >= 128 {
             buf[120..128].copy_from_slice(&self.guard_cf_dispatch_function_pointer.to_le_bytes());
+        }
+        if output_size >= 136 {
             buf[128..136].copy_from_slice(&self.guard_cf_function_table.to_le_bytes());
+        }
+        if output_size >= 144 {
             buf[136..144].copy_from_slice(&self.guard_cf_function_count.to_le_bytes());
+        }
+        if output_size >= Self::SIZE_WITH_CFG {
             buf[144..148].copy_from_slice(&self.guard_flags.to_le_bytes());
         }
 
-        buf
+        if output_size > Self::SIZE_WITH_CFG && !self.trailing_data.is_empty() {
+            let count = self
+                .trailing_data
+                .len()
+                .min(output_size - Self::SIZE_WITH_CFG);
+            buf[Self::SIZE_WITH_CFG..Self::SIZE_WITH_CFG + count]
+                .copy_from_slice(&self.trailing_data[..count]);
+        }
+
+        Ok(buf)
     }
 
     pub fn has_cfg(&self) -> bool {
@@ -343,9 +483,14 @@ impl LoadConfigDirectory {
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
+        self.try_to_bytes()
+            .expect("load-config build failed: use try_to_bytes()")
+    }
+
+    pub fn try_to_bytes(&self) -> Result<Vec<u8>> {
         match self {
-            Self::Config32(c) => c.to_bytes(),
-            Self::Config64(c) => c.to_bytes(),
+            Self::Config32(c) => c.try_to_bytes(),
+            Self::Config64(c) => c.try_to_bytes(),
         }
     }
 
@@ -417,24 +562,26 @@ impl LoadConfigBuilder {
     ///
     /// Returns (data, size)
     pub fn build_with_cookie(&self, security_cookie_va: u64) -> (Vec<u8>, u32) {
+        self.try_build_with_cookie(security_cookie_va)
+            .expect("load-config build failed: use try_build_with_cookie()")
+    }
+
+    /// Build a basic load-config directory without truncating PE32 values.
+    pub fn try_build_with_cookie(&self, security_cookie_va: u64) -> Result<(Vec<u8>, u32)> {
         if self.is_64bit {
             let config = LoadConfigDirectory64 {
                 size: LoadConfigDirectory64::MIN_SIZE as u32,
                 security_cookie: security_cookie_va,
                 ..Default::default()
             };
-            let data = config.to_bytes();
-            let size = data.len() as u32;
-            (data, size)
+            Self::serialize(&LoadConfigDirectory::Config64(config))
         } else {
             let config = LoadConfigDirectory32 {
                 size: LoadConfigDirectory32::MIN_SIZE as u32,
-                security_cookie: security_cookie_va as u32,
+                security_cookie: Self::pe32_value(security_cookie_va, "security cookie")?,
                 ..Default::default()
             };
-            let data = config.to_bytes();
-            let size = data.len() as u32;
-            (data, size)
+            Self::serialize(&LoadConfigDirectory::Config32(config))
         }
     }
 
@@ -442,9 +589,22 @@ impl LoadConfigBuilder {
     ///
     /// Returns (data, size)
     pub fn build(&self, config: &LoadConfigDirectory) -> (Vec<u8>, u32) {
-        let data = config.to_bytes();
-        let size = data.len() as u32;
-        (data, size)
+        self.try_build(config)
+            .expect("load-config build failed: use try_build()")
+    }
+
+    /// Build from an existing directory, checking the configured PE width.
+    pub fn try_build(&self, config: &LoadConfigDirectory) -> Result<(Vec<u8>, u32)> {
+        let matches_width = matches!(
+            (self.is_64bit, config),
+            (true, LoadConfigDirectory::Config64(_)) | (false, LoadConfigDirectory::Config32(_))
+        );
+        if !matches_width {
+            return Err(Error::invalid_data_directory(
+                "load-config bitness does not match the target image",
+            ));
+        }
+        Self::serialize(config)
     }
 
     /// Build a LoadConfig with CFG (Control Flow Guard) settings.
@@ -467,6 +627,28 @@ impl LoadConfigBuilder {
         guard_cf_count: u64,
         flags: u32,
     ) -> (Vec<u8>, u32) {
+        self.try_build_with_cfg(
+            security_cookie_va,
+            guard_cf_check_va,
+            guard_cf_dispatch_va,
+            guard_cf_table_va,
+            guard_cf_count,
+            flags,
+        )
+        .expect("load-config build failed: use try_build_with_cfg()")
+    }
+
+    /// Build a CFG-enabled load-config directory with checked PE32 values.
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_build_with_cfg(
+        &self,
+        security_cookie_va: u64,
+        guard_cf_check_va: u64,
+        guard_cf_dispatch_va: u64,
+        guard_cf_table_va: u64,
+        guard_cf_count: u64,
+        flags: u32,
+    ) -> Result<(Vec<u8>, u32)> {
         if self.is_64bit {
             let config = LoadConfigDirectory64 {
                 size: LoadConfigDirectory64::SIZE_WITH_CFG as u32,
@@ -478,24 +660,39 @@ impl LoadConfigBuilder {
                 guard_flags: flags,
                 ..Default::default()
             };
-            let data = config.to_bytes();
-            let size = data.len() as u32;
-            (data, size)
+            Self::serialize(&LoadConfigDirectory::Config64(config))
         } else {
             let config = LoadConfigDirectory32 {
                 size: LoadConfigDirectory32::SIZE_WITH_CFG as u32,
-                security_cookie: security_cookie_va as u32,
-                guard_cf_check_function_pointer: guard_cf_check_va as u32,
-                guard_cf_dispatch_function_pointer: guard_cf_dispatch_va as u32,
-                guard_cf_function_table: guard_cf_table_va as u32,
-                guard_cf_function_count: guard_cf_count as u32,
+                security_cookie: Self::pe32_value(security_cookie_va, "security cookie")?,
+                guard_cf_check_function_pointer: Self::pe32_value(
+                    guard_cf_check_va,
+                    "CFG check function",
+                )?,
+                guard_cf_dispatch_function_pointer: Self::pe32_value(
+                    guard_cf_dispatch_va,
+                    "CFG dispatch function",
+                )?,
+                guard_cf_function_table: Self::pe32_value(guard_cf_table_va, "CFG function table")?,
+                guard_cf_function_count: Self::pe32_value(guard_cf_count, "CFG function count")?,
                 guard_flags: flags,
                 ..Default::default()
             };
-            let data = config.to_bytes();
-            let size = data.len() as u32;
-            (data, size)
+            Self::serialize(&LoadConfigDirectory::Config32(config))
         }
+    }
+
+    fn serialize(config: &LoadConfigDirectory) -> Result<(Vec<u8>, u32)> {
+        let data = config.try_to_bytes()?;
+        let size = u32::try_from(data.len())
+            .map_err(|_| Error::invalid_data_directory("load-config size exceeds u32"))?;
+        Ok((data, size))
+    }
+
+    fn pe32_value(value: u64, field: &str) -> Result<u32> {
+        u32::try_from(value).map_err(|_| {
+            Error::invalid_data_directory(format!("{field} does not fit a PE32 load config"))
+        })
     }
 
     /// Calculate the size needed for LoadConfig data.

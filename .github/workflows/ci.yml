@@ -35,19 +35,37 @@ jobs:
           restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
 
       - name: Build (default features)
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --all-features --target ${{ matrix.target }}
 
       - name: Build (no_std + alloc)
         run: cargo build --release --target ${{ matrix.target }} --no-default-features
 
+      - name: Check fuzz targets
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        run: |
+          cargo fmt --manifest-path fuzz/Cargo.toml --check
+          cargo check --manifest-path fuzz/Cargo.toml --all-targets
+          cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
+
       - name: Check formatting
-        run: cargo fmt --check
+        run: cargo fmt --all --check
 
-      - name: Clippy (default features)
-        run: cargo clippy --target ${{ matrix.target }} -- -D warnings
+      - name: Clippy (all features and targets)
+        run: cargo clippy --all-features --all-targets --target ${{ matrix.target }} -- -D warnings
 
-      - name: Clippy (no_std + alloc)
-        run: cargo clippy --target ${{ matrix.target }} --no-default-features -- -D warnings
+      - name: Clippy (no_std + alloc, all targets)
+        run: cargo clippy --no-default-features --all-targets --target ${{ matrix.target }} -- -D warnings
 
-      - name: Test
-        run: cargo test --all --target ${{ matrix.target }}
+      - name: Test (all features)
+        run: cargo test --all-features --target ${{ matrix.target }}
+
+      - name: Test (no_std + alloc)
+        run: cargo test --no-default-features --target ${{ matrix.target }}
+
+      - name: Documentation (all features)
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        run: cargo doc --no-deps --all-features --target ${{ matrix.target }}
+
+      - name: Documentation (no_std + alloc)
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        run: cargo doc --no-deps --no-default-features --target ${{ matrix.target }}

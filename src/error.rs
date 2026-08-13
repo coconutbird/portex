@@ -6,10 +6,11 @@
 //! # Example
 //!
 //! ```no_run
-//! use portex::{PE, Error};
+//! use portex::PeImage;
 //!
-//! match PE::from_file("test.exe") {
-//!     Ok(pe) => println!("Loaded PE"),
+//! # let file_bytes: &[u8] = &[];
+//! match PeImage::parse(file_bytes) {
+//!     Ok(_pe) => println!("Loaded PE"),
 //!     Err(e) => {
 //!         eprintln!("Error: {}", e);
 //!         if let Some(ctx) = e.context() {

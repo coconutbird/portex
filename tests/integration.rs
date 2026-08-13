@@ -3,7 +3,7 @@
 //! These tests perform roundtrip operations: create/parse → modify → rebuild → re-parse.
 
 use portex::{
-    ExceptionDirectory, ExportTable, ImportTable, ImportThunk, MachineType, PE, PEBuilder,
+    ExceptionDirectory, ExportTable, ImportTable, ImportThunk, MachineType, PeBuilder, PeImage,
     RelocationTable, RelocationType, Subsystem,
     debug::CodeViewRsds,
     loadconfig::{LoadConfigDirectory, LoadConfigDirectory64},
@@ -11,11 +11,11 @@ use portex::{
     tls::TlsInfo,
 };
 
-/// Test that PEBuilder creates a valid PE that can be parsed back.
+/// Test that PeBuilder creates a valid PE that can be parsed back.
 #[test]
 fn test_pe_builder_roundtrip() {
     // Create a minimal 64-bit PE
-    let pe = PEBuilder::new()
+    let pe = PeBuilder::new()
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
         .entry_point(0x1000)
@@ -33,7 +33,7 @@ fn test_pe_builder_roundtrip() {
 
     // Re-parse the built PE
     let bytes = pe.build();
-    let parsed = PE::parse(&bytes).expect("Failed to parse built PE");
+    let parsed = PeImage::parse(&bytes).expect("Failed to parse built PE");
 
     // Verify structure
     assert!(parsed.is_64bit());
@@ -43,10 +43,10 @@ fn test_pe_builder_roundtrip() {
     assert_eq!(parsed.sections[1].name(), ".data");
 }
 
-/// Test that PEBuilder creates a valid 32-bit PE.
+/// Test that PeBuilder creates a valid 32-bit PE.
 #[test]
 fn test_pe_builder_32bit_roundtrip() {
-    let pe = PEBuilder::new()
+    let pe = PeBuilder::new()
         .machine(MachineType::I386)
         .subsystem(Subsystem::WindowsGui)
         .entry_point(0x1000)
@@ -54,7 +54,7 @@ fn test_pe_builder_32bit_roundtrip() {
         .build();
 
     let bytes = pe.build();
-    let parsed = PE::parse(&bytes).expect("Failed to parse 32-bit PE");
+    let parsed = PeImage::parse(&bytes).expect("Failed to parse 32-bit PE");
 
     assert!(!parsed.is_64bit());
     assert_eq!(parsed.coff_header.machine, MachineType::I386 as u16);
@@ -64,7 +64,7 @@ fn test_pe_builder_32bit_roundtrip() {
 #[test]
 fn test_import_table_roundtrip() {
     // Create PE with a section for imports
-    let mut pe = PEBuilder::new()
+    let mut pe = PeBuilder::new()
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
         .entry_point(0x1000)
@@ -101,7 +101,7 @@ fn test_import_table_roundtrip() {
 
     // Rebuild and re-parse
     let bytes = pe.build();
-    let parsed = PE::parse(&bytes).expect("Failed to parse PE with imports");
+    let parsed = PeImage::parse(&bytes).expect("Failed to parse PE with imports");
 
     // Verify imports
     let parsed_imports = parsed.imports().expect("Failed to get imports");
@@ -111,7 +111,7 @@ fn test_import_table_roundtrip() {
 /// Test export table roundtrip.
 #[test]
 fn test_export_table_roundtrip() {
-    let mut pe = PEBuilder::new()
+    let mut pe = PeBuilder::new()
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
         .entry_point(0x1000)
@@ -129,7 +129,7 @@ fn test_export_table_roundtrip() {
         .expect("Failed to update exports");
 
     let bytes = pe.build();
-    let parsed = PE::parse(&bytes).expect("Failed to parse PE with exports");
+    let parsed = PeImage::parse(&bytes).expect("Failed to parse PE with exports");
 
     let parsed_exports = parsed.exports().expect("Failed to get exports");
     assert_eq!(parsed_exports.exports.len(), 2);
@@ -138,7 +138,7 @@ fn test_export_table_roundtrip() {
 /// Test relocation table roundtrip.
 #[test]
 fn test_relocation_roundtrip() {
-    let mut pe = PEBuilder::new()
+    let mut pe = PeBuilder::new()
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
         .entry_point(0x1000)
@@ -156,7 +156,7 @@ fn test_relocation_roundtrip() {
         .expect("Failed to update relocations");
 
     let bytes = pe.build();
-    let parsed = PE::parse(&bytes).expect("Failed to parse PE with relocations");
+    let parsed = PeImage::parse(&bytes).expect("Failed to parse PE with relocations");
 
     let parsed_relocs = parsed.relocations().expect("Failed to get relocations");
     assert!(!parsed_relocs.blocks.is_empty());
@@ -165,7 +165,7 @@ fn test_relocation_roundtrip() {
 /// Test exception directory roundtrip.
 #[test]
 fn test_exception_roundtrip() {
-    let mut pe = PEBuilder::new()
+    let mut pe = PeBuilder::new()
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
         .entry_point(0x1000)
@@ -182,7 +182,7 @@ fn test_exception_roundtrip() {
         .expect("Failed to update exceptions");
 
     let bytes = pe.build();
-    let parsed = PE::parse(&bytes).expect("Failed to parse PE with exceptions");
+    let parsed = PeImage::parse(&bytes).expect("Failed to parse PE with exceptions");
 
     let parsed_exceptions = parsed
         .exception_directory()
@@ -193,7 +193,7 @@ fn test_exception_roundtrip() {
 /// Test TLS directory roundtrip.
 #[test]
 fn test_tls_roundtrip() {
-    let mut pe = PEBuilder::new()
+    let mut pe = PeBuilder::new()
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
         .entry_point(0x1000)
@@ -208,7 +208,7 @@ fn test_tls_roundtrip() {
         .expect("Failed to update TLS");
 
     let bytes = pe.build();
-    let parsed = PE::parse(&bytes).expect("Failed to parse PE with TLS");
+    let parsed = PeImage::parse(&bytes).expect("Failed to parse PE with TLS");
 
     // Verify TLS directory is present
     let tls = parsed.tls().expect("Failed to get TLS");
@@ -218,7 +218,7 @@ fn test_tls_roundtrip() {
 /// Test debug directory roundtrip.
 #[test]
 fn test_debug_roundtrip() {
-    let mut pe = PEBuilder::new()
+    let mut pe = PeBuilder::new()
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
         .entry_point(0x1000)
@@ -239,7 +239,7 @@ fn test_debug_roundtrip() {
         .expect("Failed to update debug");
 
     let bytes = pe.build();
-    let parsed = PE::parse(&bytes).expect("Failed to parse PE with debug");
+    let parsed = PeImage::parse(&bytes).expect("Failed to parse PE with debug");
 
     // Verify debug directory is present
     let debug_info = parsed.debug_info().expect("Failed to get debug info");
@@ -249,7 +249,7 @@ fn test_debug_roundtrip() {
 /// Test LoadConfig roundtrip.
 #[test]
 fn test_loadconfig_roundtrip() {
-    let mut pe = PEBuilder::new()
+    let mut pe = PeBuilder::new()
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
         .entry_point(0x1000)
@@ -269,7 +269,7 @@ fn test_loadconfig_roundtrip() {
         .expect("Failed to update LoadConfig");
 
     let bytes = pe.build();
-    let parsed = PE::parse(&bytes).expect("Failed to parse PE with LoadConfig");
+    let parsed = PeImage::parse(&bytes).expect("Failed to parse PE with LoadConfig");
 
     // Verify LoadConfig is present
     let config = parsed.load_config().expect("Failed to get LoadConfig");
@@ -279,7 +279,7 @@ fn test_loadconfig_roundtrip() {
 /// Test section management.
 #[test]
 fn test_section_management() {
-    let mut pe = PEBuilder::new()
+    let mut pe = PeBuilder::new()
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
         .entry_point(0x1000)
@@ -296,7 +296,7 @@ fn test_section_management() {
 
     // Rebuild and re-parse
     let bytes = pe.build();
-    let parsed = PE::parse(&bytes).expect("Failed to parse PE with added section");
+    let parsed = PeImage::parse(&bytes).expect("Failed to parse PE with added section");
 
     assert_eq!(parsed.sections.len(), 2);
 }
@@ -307,7 +307,7 @@ fn test_section_management() {
 /// varies based on implementation.
 #[test]
 fn test_multiple_updates_succeed() {
-    let mut pe = PEBuilder::new()
+    let mut pe = PeBuilder::new()
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
         .entry_point(0x1000)
@@ -336,7 +336,7 @@ fn test_multiple_updates_succeed() {
 
     // Rebuild
     let bytes = pe.build();
-    let parsed = PE::parse(&bytes).expect("Failed to parse modified PE");
+    let parsed = PeImage::parse(&bytes).expect("Failed to parse modified PE");
 
     // Verify imports were written
     assert!(!parsed.imports().expect("imports").dlls.is_empty());
@@ -347,7 +347,7 @@ fn test_multiple_updates_succeed() {
 /// Test that we can parse and validate the built PE.
 #[test]
 fn test_pe_validation() {
-    let pe = PEBuilder::new()
+    let pe = PeBuilder::new()
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
         .entry_point(0x1000)
@@ -356,7 +356,7 @@ fn test_pe_validation() {
         .build();
 
     let bytes = pe.build();
-    let parsed = PE::parse(&bytes).expect("Failed to parse PE");
+    let parsed = PeImage::parse(&bytes).expect("Failed to parse PE");
 
     // Validate the parsed PE
     let issues = parsed.validate();
