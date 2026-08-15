@@ -69,3 +69,44 @@ jobs:
       - name: Documentation (no_std + alloc)
         if: matrix.target == 'x86_64-pc-windows-msvc'
         run: cargo doc --no-deps --no-default-features --target ${{ matrix.target }}
+
+      - name: Verify release package
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        run: cargo package
+
+  msrv:
+    name: MSRV (Rust 1.88)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install MSRV
+        run: rustup toolchain install 1.88.0 --profile minimal
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-msrv-1.88-cargo-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-msrv-1.88-cargo-
+
+      - name: Check (all features and targets)
+        run: cargo +1.88.0 check --all-features --all-targets
+
+      - name: Check (no_std + alloc, all targets)
+        run: cargo +1.88.0 check --no-default-features --all-targets
+
+      - name: Test (all features)
+        run: cargo +1.88.0 test --all-features
+
+      - name: Test (no_std + alloc)
+        run: cargo +1.88.0 test --no-default-features
+
+      - name: Documentation (all features)
+        run: cargo +1.88.0 doc --no-deps --all-features
+
+      - name: Documentation (no_std + alloc)
+        run: cargo +1.88.0 doc --no-deps --no-default-features

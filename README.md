@@ -34,15 +34,18 @@ pass `PeImage::clr_metadata()` to a metadata crate such as `clrmeta`.
 
 ```toml
 [dependencies]
-portex = "0.2"
+portex = "0.3"
 ```
 
 For `no_std + alloc`:
 
 ```toml
 [dependencies]
-portex = { version = "0.2", default-features = false }
+portex = { version = "0.3", default-features = false }
 ```
+
+Portex 0.3 requires Rust 1.88 or newer. See the
+[changelog](CHANGELOG.md) for release history and migration notes.
 
 The default `std` feature adds filesystem helpers, `FileReader`, standard
 I/O error conversion, and `nostdio`'s standard-library integration. Parsing,
@@ -217,4 +220,4 @@ cargo +nightly fuzz run fuzz-pe-parse
 
 ## License
 
-MIT
+Licensed under the [MIT License](LICENSE).
