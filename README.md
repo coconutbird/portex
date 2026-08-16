@@ -44,8 +44,7 @@ For `no_std + alloc`:
 portex = { version = "0.3", default-features = false }
 ```
 
-Portex 0.3 requires Rust 1.88 or newer. See the
-[changelog](CHANGELOG.md) for release history and migration notes.
+Portex 0.3 requires Rust 1.88 or newer.
 
 The default `std` feature adds filesystem helpers, `FileReader`, standard
 I/O error conversion, and `nostdio`'s standard-library integration. Parsing,
