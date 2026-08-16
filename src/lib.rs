@@ -1,21 +1,23 @@
 //! # Portex
 //!
-//! A self-contained PE (Portable Executable) file reader/writer library.
+//! A `no_std`-friendly PE (Portable Executable) image reader/writer library.
 //!
 //! This library provides types and utilities for parsing and manipulating
-//! Windows PE files without external dependencies.
+//! Windows PE executable images. It distinguishes raw files from loader-mapped
+//! memory because their RVA-to-source translations are different.
 //!
 //! ## Features
 //!
-//! - **Multiple loading modes**: Load from files, memory slices, or implement
-//!   the `Reader` trait for custom sources (e.g., remote process memory).
-//! - **Partial loading**: Use `PEHeaders` to parse just headers without loading
+//! - **Multiple loading modes**: Load raw files or loader-mapped images from
+//!   memory slices, or implement the `ReadAt` trait for custom sources (e.g.,
+//!   remote process memory).
+//! - **Partial loading**: Use `PeHeaders` to parse just headers without loading
 //!   the entire file - ideal for remote process scenarios.
 //! - **Self-contained**: All PE structures defined from scratch, no Windows SDK.
 //! - **`no_std` mode**: Disable the `std` feature for `no_std + alloc` builds.
 //!   The full PE API (parsers, builders, layout, validation, in-memory readers)
 //!   stays available. Only entry points that genuinely need `std` —
-//!   `PE::from_file`, `PE::write_to_file`, `PEHeaders::from_file`, the
+//!   `PeImage::from_file`, `PeImage::write_to_file`, `PeHeaders::from_file`, the
 //!   `FileReader`, and the `std::error::Error` / `From<io::Error>` impls —
 //!   compile out.
 //!
@@ -41,14 +43,15 @@
 //! ## Example
 //!
 //! ```no_run
-//! use portex::{PE, PEHeaders};
+//! use portex::{PeFile, PeHeaders};
 //!
-//! // Load full PE from file
-//! let pe = PE::from_file("example.exe").unwrap();
-//! println!("64-bit: {}", pe.is_64bit());
+//! // PeFile preserves certificates, overlays, and raw file gaps.
+//! # let bytes: &[u8] = &[];
+//! let file = PeFile::parse(bytes).unwrap();
+//! println!("64-bit: {}", file.image().is_64bit());
 //!
 //! // Or just load headers (more efficient for large files)
-//! let headers = PEHeaders::from_file("example.dll").unwrap();
+//! let headers = PeHeaders::from_slice(bytes).unwrap();
 //! println!("Entry point: {:#x}", headers.entry_point());
 //! ```
 
@@ -81,15 +84,21 @@ pub mod coff;
 pub mod data_dir;
 pub mod debug;
 pub mod delay_import;
+pub mod directories;
 pub mod dos;
 pub mod error;
 pub mod exception;
 pub mod export;
+pub mod headers;
+pub mod image;
 pub mod import;
+pub mod io;
 pub mod layout;
 pub mod loadconfig;
 pub mod optional;
+mod parse_utils;
 pub mod pe;
+pub mod pe_file;
 pub mod reader;
 pub mod reloc;
 pub mod resource;
@@ -102,7 +111,7 @@ pub mod validation;
 pub use bound_import::{
     BoundForwarderRef, BoundImportBuilder, BoundImportDescriptor, BoundImportDirectory,
 };
-pub use builder::PEBuilder;
+pub use builder::PeBuilder;
 pub use checksum::{calculate_checksum, checksum_field_offset, compute_pe_checksum};
 pub use clr::{CliBuilder, CliHeader};
 pub use coff::{CoffHeader, MachineType};
@@ -113,7 +122,8 @@ pub use delay_import::{
 };
 pub use error::{Error, Result};
 pub use exception::{
-    ExceptionBuilder, ExceptionDirectory, RuntimeFunction, UnwindCode, UnwindInfo, UnwindOpCode,
+    ExceptionBuilder, ExceptionDirectory, ExceptionTable, PackedExceptionDirectory,
+    PackedRuntimeFunction, RuntimeFunction, UnwindCode, UnwindInfo, UnwindOpCode,
 };
 pub use export::{
     ExportAddress, ExportDirectory, ExportTable, ExportTableBuilder, ExportedFunction,
@@ -124,10 +134,11 @@ pub use loadconfig::{
     LoadConfigBuilder, LoadConfigDirectory, LoadConfigDirectory32, LoadConfigDirectory64,
 };
 pub use optional::{OptionalHeader, OptionalHeader32, OptionalHeader64, Subsystem};
-pub use pe::{PE, PEHeaders};
+pub use pe::{MissingSectionData, ParseOptions, PeHeaders, PeImage, SourceLayout};
+pub use pe_file::PeFile;
 #[cfg(feature = "std")]
 pub use reader::FileReader;
-pub use reader::{BaseAddressReader, Reader, SliceReader, VecReader};
+pub use reader::{BaseAddressReader, ReadAt, SeekReader, SliceReader, VecReader};
 pub use reloc::{
     RelocationBlock, RelocationBuilder, RelocationEntry, RelocationTable, RelocationType,
 };

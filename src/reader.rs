@@ -1,12 +1,12 @@
-//! Reader trait and implementations for reading PE data from various sources.
+//! Positional reading traits and implementations for PE data sources.
 
 use crate::prelude::*;
 use crate::{Error, Result};
+use core::cell::RefCell;
+use nostdio::SeekFrom;
 
 #[cfg(feature = "std")]
 use std::fs::File;
-#[cfg(feature = "std")]
-use std::io::{Read, Seek, SeekFrom};
 #[cfg(feature = "std")]
 use std::path::Path;
 
@@ -14,7 +14,7 @@ use std::path::Path;
 ///
 /// Implement this trait to support reading PE structures from custom sources,
 /// such as remote process memory via ReadProcessMemory.
-pub trait Reader {
+pub trait ReadAt {
     /// Read bytes at the given offset into the buffer.
     /// Returns the number of bytes actually read.
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize>;
@@ -25,10 +25,27 @@ pub trait Reader {
 
     /// Read exact number of bytes at offset, returning error if not enough data.
     fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
-        let n = self.read_at(offset, buf)?;
-        if n < buf.len() {
-            return Err(Error::buffer_too_small(buf.len(), n));
+        let expected = buf.len();
+        let mut total = 0usize;
+
+        while total < expected {
+            let read_offset = offset
+                .checked_add(total as u64)
+                .ok_or_else(|| Error::offset_out_of_bounds(usize::MAX, expected))?;
+            let count = self.read_at(read_offset, &mut buf[total..])?;
+            if count == 0 {
+                return Err(Error::buffer_too_small(expected, total));
+            }
+            if count > expected - total {
+                return Err(Error::generic(
+                    "ReadAt::read_at reported more bytes than the supplied buffer",
+                ));
+            }
+            total = total
+                .checked_add(count)
+                .ok_or_else(|| Error::offset_out_of_bounds(usize::MAX, expected))?;
         }
+
         Ok(())
     }
 
@@ -62,13 +79,96 @@ pub trait Reader {
 
     /// Read a block of bytes at offset, returning owned Vec.
     fn read_bytes_at(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
-        let mut buf = vec![0u8; len];
+        let mut buf = Vec::new();
+        buf.try_reserve_exact(len)
+            .map_err(|_| Error::generic("reader request is too large to allocate"))?;
+        buf.resize(len, 0);
         self.read_exact_at(offset, &mut buf)?;
         Ok(buf)
     }
 }
 
-/// Reader implementation for byte slices (in-memory data).
+/// Adapter from a stateful [`nostdio::Read`] + [`nostdio::Seek`] source to
+/// Portex's immutable positional [`ReadAt`] interface.
+///
+/// The adapter uses interior mutability and is therefore intended for
+/// single-threaded access. Implement [`ReadAt`] directly for remote-process or
+/// natively positional sources that can support concurrent reads.
+pub struct SeekReader<R> {
+    inner: RefCell<R>,
+    size: Option<u64>,
+}
+
+impl<R> SeekReader<R> {
+    /// Wrap a seekable stream with an optional known length.
+    pub const fn new(inner: R, size: Option<u64>) -> Self {
+        Self {
+            inner: RefCell::new(inner),
+            size,
+        }
+    }
+
+    /// Consume the adapter and return the wrapped stream.
+    pub fn into_inner(self) -> R {
+        self.inner.into_inner()
+    }
+
+    /// Borrow the wrapped stream mutably without consuming the adapter.
+    pub fn get_mut(&mut self) -> &mut R {
+        self.inner.get_mut()
+    }
+}
+
+impl<R: nostdio::Seek> SeekReader<R> {
+    /// Discover the stream length while restoring its original position.
+    pub fn with_discovered_size(mut inner: R) -> Result<Self> {
+        let original = inner.stream_position().map_err(map_nostdio_error)?;
+        let size = inner.seek(SeekFrom::End(0)).map_err(map_nostdio_error)?;
+        inner
+            .seek(SeekFrom::Start(original))
+            .map_err(map_nostdio_error)?;
+        Ok(Self::new(inner, Some(size)))
+    }
+}
+
+impl<R: nostdio::Read + nostdio::Seek> ReadAt for SeekReader<R> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
+        let mut inner = self
+            .inner
+            .try_borrow_mut()
+            .map_err(|_| Error::generic("seekable reader is already borrowed"))?;
+        inner
+            .seek(SeekFrom::Start(offset))
+            .map_err(map_nostdio_error)?;
+        inner.read(buf).map_err(map_nostdio_error)
+    }
+
+    fn size(&self) -> Option<u64> {
+        self.size
+    }
+}
+
+impl<R> core::fmt::Debug for SeekReader<R> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("SeekReader")
+            .field("size", &self.size)
+            .finish_non_exhaustive()
+    }
+}
+
+pub(crate) fn map_nostdio_error(error: nostdio::IoError) -> Error {
+    #[cfg(feature = "std")]
+    {
+        Error::from(error)
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        Error::generic(error.to_string())
+    }
+}
+
+/// Positional reader for byte slices (in-memory data).
 #[derive(Debug, Clone)]
 pub struct SliceReader<'a> {
     data: &'a [u8],
@@ -84,7 +184,7 @@ impl<'a> SliceReader<'a> {
     }
 }
 
-impl Reader for SliceReader<'_> {
+impl ReadAt for SliceReader<'_> {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
         let offset = match usize::try_from(offset) {
             Ok(o) => o,
@@ -104,7 +204,7 @@ impl Reader for SliceReader<'_> {
     }
 }
 
-/// Reader implementation for owned byte vectors.
+/// Positional reader for owned byte vectors.
 #[derive(Debug, Clone)]
 pub struct VecReader {
     data: Vec<u8>,
@@ -124,7 +224,7 @@ impl VecReader {
     }
 }
 
-impl Reader for VecReader {
+impl ReadAt for VecReader {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
         let offset = match usize::try_from(offset) {
             Ok(o) => o,
@@ -144,61 +244,25 @@ impl Reader for VecReader {
     }
 }
 
-/// Reader implementation for files on disk.
-///
-/// Note: `FileReader` uses `RefCell` internally and is therefore `!Sync`.
-/// It can be used from a single thread but not shared across threads.
-/// For multi-threaded scenarios, consider reading the file into a `VecReader`.
 #[cfg(feature = "std")]
-pub struct FileReader {
-    file: std::cell::RefCell<File>,
-    size: u64,
-}
+pub type FileReader = SeekReader<File>;
 
 #[cfg(feature = "std")]
-impl std::fmt::Debug for FileReader {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FileReader")
-            .field("size", &self.size)
-            .finish_non_exhaustive()
-    }
-}
-
-#[cfg(feature = "std")]
-impl FileReader {
+impl SeekReader<File> {
     /// Open a file for reading.
     #[must_use = "opening a file may fail"]
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let mut file = File::open(path)?;
-        let size = file.seek(SeekFrom::End(0))?;
-        Ok(Self {
-            file: std::cell::RefCell::new(file),
-            size,
-        })
+        Self::with_discovered_size(File::open(path)?)
     }
 
     /// Get the size of the file in bytes.
     #[must_use]
     pub fn file_size(&self) -> u64 {
-        self.size
+        self.size.unwrap_or(0)
     }
 }
 
-#[cfg(feature = "std")]
-impl Reader for FileReader {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
-        let mut file = self.file.borrow_mut();
-        file.seek(SeekFrom::Start(offset))?;
-        let n = file.read(buf)?;
-        Ok(n)
-    }
-
-    fn size(&self) -> Option<u64> {
-        Some(self.size)
-    }
-}
-
-/// Reader for a base address in the current process.
+/// Positional reader for a base address in the current process.
 /// Useful for parsing already-loaded modules.
 #[derive(Debug, Clone, Copy)]
 pub struct BaseAddressReader {
@@ -220,7 +284,7 @@ impl BaseAddressReader {
     }
 }
 
-impl Reader for BaseAddressReader {
+impl ReadAt for BaseAddressReader {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
         let offset = match usize::try_from(offset) {
             Ok(o) => o,

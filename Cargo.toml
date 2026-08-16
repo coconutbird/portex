@@ -1,8 +1,12 @@
+# Taplo 0.9 cannot resolve SchemaStore's split Cargo lint schemas.
+#:schema https://raw.githubusercontent.com/SchemaStore/schemastore/cf458e6e33141d3a0506f24279de79eeeeb5130a/src/schemas/json/cargo.json
+
 [package]
 name = "portex"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
-description = "A self-contained, no_std-friendly PE (Portable Executable) file reader/writer library"
+rust-version = "1.88"
+description = "A no_std-friendly parser, editor, and builder for raw and mapped PE executable images"
 license = "MIT"
 repository = "https://github.com/coconutbird/portex"
 readme = "README.md"
@@ -11,9 +15,16 @@ categories = ["parsing", "development-tools"]
 
 [features]
 default = ["std"]
-std = []
+std = ["nostdio/std"]
 
 [dependencies]
+nostdio = { version = "0.2", default-features = false }
+
+[lints.rust]
+warnings = "deny"
 
 [lints.clippy]
-all = { level = "warn", priority = -1 }
+all = "deny"
+
+[lints.rustdoc]
+all = "deny"

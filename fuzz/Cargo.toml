@@ -1,9 +1,38 @@
+# Taplo 0.9 cannot resolve SchemaStore's split Cargo lint schemas.
+#:schema https://raw.githubusercontent.com/SchemaStore/schemastore/cf458e6e33141d3a0506f24279de79eeeeb5130a/src/schemas/json/cargo.json
+
 [package]
 name = "portex-fuzz"
 version = "0.0.0"
 publish = false
-edition = "2021"
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
 
 [dependencies]
-bolero = "0.11"
+libfuzzer-sys = "0.4"
 portex = { path = ".." }
+
+[lints.rust]
+warnings = "deny"
+
+[lints.clippy]
+all = "deny"
+
+[lints.rustdoc]
+all = "deny"
+
+[[bin]]
+name = "fuzz-pe-headers"
+path = "fuzz_targets/fuzz-pe-headers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz-pe-parse"
+path = "fuzz_targets/fuzz-pe-parse.rs"
+test = false
+doc = false
+bench = false

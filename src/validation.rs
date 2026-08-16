@@ -5,9 +5,10 @@
 //! # Example
 //!
 //! ```no_run
-//! use portex::PE;
+//! use portex::PeImage;
 //!
-//! let pe = PE::from_file("example.exe").unwrap();
+//! # let file_bytes: &[u8] = &[];
+//! let pe = PeImage::parse(file_bytes).unwrap();
 //! let issues = pe.validate();
 //!
 //! for issue in &issues {
@@ -72,6 +73,18 @@ pub enum ValidationCode {
     NoSections,
     /// Section has no data but non-zero raw size.
     EmptySectionWithSize,
+    /// COFF section count does not match the parsed section table.
+    InconsistentSectionCount,
+    /// Optional-header size/count fields do not match their parsed data.
+    InconsistentOptionalHeader,
+    /// A reserved standard data directory is non-zero.
+    ReservedDataDirectory,
+    /// A data-directory range extends outside readable image/file data.
+    InvalidDataDirectoryRange,
+    /// A section or header address is not aligned as required.
+    MisalignedSection,
+    /// Optional-header width is inconsistent with the machine type.
+    MachineMagicMismatch,
 }
 
 impl fmt::Display for ValidationCode {

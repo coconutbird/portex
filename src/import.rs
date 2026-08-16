@@ -8,9 +8,10 @@
 //! ## Listing imports from a PE file
 //!
 //! ```no_run
-//! use portex::PE;
+//! use portex::PeImage;
 //!
-//! let pe = PE::from_file("example.exe")?;
+//! # let file_bytes: &[u8] = &[];
+//! let pe = PeImage::parse(file_bytes)?;
 //!
 //! let imports = pe.imports()?;
 //! for dll in &imports.dlls {
@@ -32,9 +33,10 @@
 //! ## Adding new imports to a PE file
 //!
 //! ```no_run
-//! use portex::{PE, ImportThunk, ImportTable};
+//! use portex::{ImportTable, ImportThunk, PeImage};
 //!
-//! let mut pe = PE::from_file("input.exe")?;
+//! # let file_bytes: &[u8] = &[];
+//! let mut pe = PeImage::parse(file_bytes)?;
 //!
 //! // Build new import table
 //! let mut imports = ImportTable::default();
@@ -48,7 +50,8 @@
 //!
 //! // Update PE with new imports
 //! pe.update_imports(imports, None)?;
-//! pe.write_to_file("output.exe")?;
+//! let rebuilt = pe.try_build()?;
+//! assert!(!rebuilt.is_empty());
 //! # Ok::<(), portex::Error>(())
 //! ```
 
@@ -58,7 +61,9 @@ use crate::{Error, Result};
 /// Maximum length for DLL and function names when reading import/export tables.
 /// This is a reasonable limit that covers all valid Windows DLL names while
 /// preventing unbounded reads on malformed PE files.
-const MAX_NAME_LEN: usize = 256;
+const MAX_NAME_LEN: usize = 4096;
+const MAX_IMPORT_DESCRIPTORS: usize = 65_536;
+const MAX_IMPORT_THUNKS: usize = 1_048_576;
 
 /// IMAGE_IMPORT_DESCRIPTOR - 20 bytes
 /// Describes one imported DLL.
@@ -168,7 +173,7 @@ impl ImportThunk {
 }
 
 /// A single imported DLL with its imports.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportedDll {
     /// The DLL name.
     pub name: String,
@@ -179,7 +184,7 @@ pub struct ImportedDll {
 }
 
 /// The complete import table.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImportTable {
     /// List of imported DLLs.
     pub dlls: Vec<ImportedDll>,
@@ -193,17 +198,71 @@ impl ImportTable {
     where
         F: Fn(u32, usize) -> Option<Vec<u8>>,
     {
+        Self::parse_bounded(import_rva, None, is_64bit, read_at_rva)
+    }
+
+    /// Parse an import descriptor table without reading descriptors beyond its
+    /// data-directory size. Names and thunk arrays may reside elsewhere in the
+    /// image, as permitted by the PE format.
+    pub fn parse_sized<F>(
+        import_rva: u32,
+        import_size: u32,
+        is_64bit: bool,
+        read_at_rva: F,
+    ) -> Result<Self>
+    where
+        F: Fn(u32, usize) -> Option<Vec<u8>>,
+    {
+        if import_size < ImportDescriptor::SIZE as u32 {
+            return Err(Error::invalid_data_directory(format!(
+                "import directory is {} bytes, expected at least {}",
+                import_size,
+                ImportDescriptor::SIZE
+            )));
+        }
+        Self::parse_bounded(import_rva, Some(import_size), is_64bit, read_at_rva)
+    }
+
+    fn parse_bounded<F>(
+        import_rva: u32,
+        import_size: Option<u32>,
+        is_64bit: bool,
+        read_at_rva: F,
+    ) -> Result<Self>
+    where
+        F: Fn(u32, usize) -> Option<Vec<u8>>,
+    {
         let mut dlls = Vec::new();
         let mut offset = 0u32;
 
-        loop {
+        for _ in 0..MAX_IMPORT_DESCRIPTORS {
+            if let Some(size) = import_size {
+                let end = offset
+                    .checked_add(ImportDescriptor::SIZE as u32)
+                    .ok_or_else(|| {
+                        Error::invalid_data_directory("import descriptor range overflow")
+                    })?;
+                if end > size {
+                    return Err(Error::invalid_data_directory(
+                        "import descriptor table is missing a terminator within its directory",
+                    ));
+                }
+            }
             // Read import descriptor
-            let desc_data = read_at_rva(import_rva + offset, ImportDescriptor::SIZE)
-                .ok_or(Error::invalid_rva(import_rva + offset))?;
+            let descriptor_rva = import_rva
+                .checked_add(offset)
+                .ok_or_else(|| Error::invalid_data_directory("import descriptor RVA overflow"))?;
+            let desc_data = read_at_rva(descriptor_rva, ImportDescriptor::SIZE)
+                .ok_or(Error::invalid_rva(descriptor_rva))?;
             let descriptor = ImportDescriptor::parse(&desc_data)?;
 
             if descriptor.is_null() {
-                break;
+                return Ok(Self { dlls });
+            }
+            if descriptor.name_rva == 0 {
+                return Err(Error::invalid_data_directory(
+                    "non-null import descriptor has no DLL name RVA",
+                ));
             }
 
             // Read DLL name
@@ -224,19 +283,23 @@ impl ImportTable {
                 imports,
             });
 
-            offset += ImportDescriptor::SIZE as u32;
+            offset = offset
+                .checked_add(ImportDescriptor::SIZE as u32)
+                .ok_or_else(|| {
+                    Error::invalid_data_directory("import descriptor table size overflow")
+                })?;
         }
 
-        Ok(Self { dlls })
+        Err(Error::invalid_data_directory(
+            "import descriptor table is missing a terminator",
+        ))
     }
 
     fn read_string<F>(read_at_rva: &F, rva: u32) -> Result<String>
     where
         F: Fn(u32, usize) -> Option<Vec<u8>>,
     {
-        let data = read_at_rva(rva, MAX_NAME_LEN).ok_or(Error::invalid_rva(rva))?;
-        let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
-        String::from_utf8(data[..end].to_vec()).map_err(|_| Error::invalid_utf8())
+        crate::parse_utils::read_c_string(read_at_rva, rva, MAX_NAME_LEN, "import name")
     }
 
     fn read_thunks<F>(read_at_rva: &F, thunk_rva: u32, is_64bit: bool) -> Result<Vec<ImportThunk>>
@@ -247,49 +310,84 @@ impl ImportTable {
         let thunk_size = if is_64bit { 8 } else { 4 };
         let mut offset = 0u32;
 
-        loop {
-            let data = read_at_rva(thunk_rva + offset, thunk_size)
-                .ok_or(Error::invalid_rva(thunk_rva + offset))?;
+        for _ in 0..MAX_IMPORT_THUNKS {
+            let entry_rva = thunk_rva
+                .checked_add(offset)
+                .ok_or_else(|| Error::invalid_data_directory("import thunk RVA overflow"))?;
+            let data = crate::parse_utils::read_exact_rva(
+                read_at_rva,
+                entry_rva,
+                thunk_size,
+                "import thunk",
+            )?;
 
             let (is_ordinal, ordinal, hint_rva) = if is_64bit {
                 let value = u64::from_le_bytes([
                     data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
                 ]);
                 if value == 0 {
-                    break;
+                    return Ok(imports);
                 }
-                (
-                    ImportThunk::is_ordinal_entry_64(value),
-                    ImportThunk::ordinal_from_64(value),
-                    ImportThunk::hint_name_rva_from_64(value),
-                )
+                if ImportThunk::is_ordinal_entry_64(value) {
+                    if value & 0x7fff_ffff_ffff_0000 != 0 {
+                        return Err(Error::invalid_data_directory(
+                            "64-bit ordinal import has nonzero reserved bits",
+                        ));
+                    }
+                    (true, ImportThunk::ordinal_from_64(value), 0)
+                } else {
+                    let hint_rva = u32::try_from(value).map_err(|_| {
+                        Error::invalid_data_directory(
+                            "64-bit import hint/name address does not fit an RVA",
+                        )
+                    })?;
+                    (false, 0, hint_rva)
+                }
             } else {
                 let value = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
                 if value == 0 {
-                    break;
+                    return Ok(imports);
                 }
-                (
-                    ImportThunk::is_ordinal_entry_32(value),
-                    ImportThunk::ordinal_from_32(value),
-                    ImportThunk::hint_name_rva_from_32(value),
-                )
+                if ImportThunk::is_ordinal_entry_32(value) {
+                    if value & 0x7fff_0000 != 0 {
+                        return Err(Error::invalid_data_directory(
+                            "32-bit ordinal import has nonzero reserved bits",
+                        ));
+                    }
+                    (true, ImportThunk::ordinal_from_32(value), 0)
+                } else {
+                    (false, 0, ImportThunk::hint_name_rva_from_32(value))
+                }
             };
 
             let thunk = if is_ordinal {
                 ImportThunk::Ordinal(ordinal)
             } else {
+                if hint_rva == 0 {
+                    return Err(Error::invalid_data_directory(
+                        "named import has a null hint/name RVA",
+                    ));
+                }
                 // Read hint (2 bytes) + name
-                let hint_data = read_at_rva(hint_rva, 2).ok_or(Error::invalid_rva(hint_rva))?;
+                let hint_data =
+                    crate::parse_utils::read_exact_rva(read_at_rva, hint_rva, 2, "import hint")?;
                 let hint = u16::from_le_bytes([hint_data[0], hint_data[1]]);
-                let name = Self::read_string(read_at_rva, hint_rva + 2)?;
+                let name_rva = hint_rva.checked_add(2).ok_or_else(|| {
+                    Error::invalid_data_directory("import hint/name RVA overflow")
+                })?;
+                let name = Self::read_string(read_at_rva, name_rva)?;
                 ImportThunk::Name { hint, name }
             };
 
             imports.push(thunk);
-            offset += thunk_size as u32;
+            offset = offset
+                .checked_add(thunk_size as u32)
+                .ok_or_else(|| Error::invalid_data_directory("import thunk table size overflow"))?;
         }
 
-        Ok(imports)
+        Err(Error::invalid_data_directory(
+            "import thunk table is missing a terminator",
+        ))
     }
 
     /// Check if the import table is empty.
@@ -365,47 +463,117 @@ impl ImportTableBuilder {
 
     /// Calculate the total size needed for the import section.
     pub fn calculate_size(&self, table: &ImportTable) -> usize {
+        self.try_calculate_size(table)
+            .expect("import table size overflow: use try_calculate_size()")
+    }
+
+    /// Calculate the serialized size with checked arithmetic and string
+    /// validation.
+    pub fn try_calculate_size(&self, table: &ImportTable) -> Result<usize> {
         if table.dlls.is_empty() {
-            return 0;
+            return Ok(0);
         }
 
         let thunk_size = if self.is_64bit { 8 } else { 4 };
 
         // Import descriptors (one per DLL + null terminator)
-        let descriptors_size = (table.dlls.len() + 1) * ImportDescriptor::SIZE;
+        let descriptors_size = table
+            .dlls
+            .len()
+            .checked_add(1)
+            .and_then(|count| count.checked_mul(ImportDescriptor::SIZE))
+            .ok_or_else(|| Error::invalid_data_directory("import descriptor size overflow"))?;
 
         // ILT and IAT (both same size: thunks per DLL + null terminator each)
-        let mut thunks_count = 0;
+        let mut thunks_count = 0usize;
         for dll in &table.dlls {
-            thunks_count += dll.imports.len() + 1; // +1 for null terminator
+            if dll.name.is_empty() || dll.name.as_bytes().contains(&0) {
+                return Err(Error::invalid_data_directory(
+                    "import DLL names must be nonempty and contain no NUL bytes",
+                ));
+            }
+            thunks_count =
+                thunks_count
+                    .checked_add(dll.imports.len().checked_add(1).ok_or_else(|| {
+                        Error::invalid_data_directory("import thunk count overflow")
+                    })?)
+                    .ok_or_else(|| Error::invalid_data_directory("import thunk count overflow"))?;
         }
-        let ilt_size = thunks_count * thunk_size;
+        let ilt_size = thunks_count
+            .checked_mul(thunk_size)
+            .ok_or_else(|| Error::invalid_data_directory("import thunk table size overflow"))?;
         let iat_size = ilt_size; // IAT is same size as ILT
 
         // Hint/Name entries
-        let mut hint_names_size = 0;
+        let mut hint_names_size = 0usize;
         for dll in &table.dlls {
             for import in &dll.imports {
                 if let ImportThunk::Name { name, .. } = import {
+                    if name.is_empty() || name.as_bytes().contains(&0) {
+                        return Err(Error::invalid_data_directory(
+                            "import names must be nonempty and contain no NUL bytes",
+                        ));
+                    }
                     // 2 bytes hint + name + null terminator + padding to even
-                    let entry_size = 2 + name.len() + 1;
-                    hint_names_size += (entry_size + 1) & !1; // Align to 2
+                    let entry_size = name.len().checked_add(3).ok_or_else(|| {
+                        Error::invalid_data_directory("import name size overflow")
+                    })?;
+                    let aligned = entry_size.checked_add(1).ok_or_else(|| {
+                        Error::invalid_data_directory("import name alignment overflow")
+                    })? & !1;
+                    hint_names_size = hint_names_size.checked_add(aligned).ok_or_else(|| {
+                        Error::invalid_data_directory("import names size overflow")
+                    })?;
                 }
             }
         }
 
         // DLL names
-        let mut dll_names_size = 0;
+        let mut dll_names_size = 0usize;
         for dll in &table.dlls {
-            dll_names_size += dll.name.len() + 1; // +1 for null terminator
+            dll_names_size = dll_names_size
+                .checked_add(dll.name.len().checked_add(1).ok_or_else(|| {
+                    Error::invalid_data_directory("import DLL name size overflow")
+                })?)
+                .ok_or_else(|| Error::invalid_data_directory("import DLL names size overflow"))?;
         }
 
-        descriptors_size + ilt_size + iat_size + hint_names_size + dll_names_size
+        descriptors_size
+            .checked_add(ilt_size)
+            .and_then(|size| size.checked_add(iat_size))
+            .and_then(|size| size.checked_add(hint_names_size))
+            .and_then(|size| size.checked_add(dll_names_size))
+            .ok_or_else(|| Error::invalid_data_directory("import table size overflow"))
     }
 
     /// Build the import section data and return (section_data, iat_rva, iat_size).
     /// The IAT RVA/size can be used to update the IAT data directory.
     pub fn build(&self, table: &ImportTable) -> (Vec<u8>, u32, u32) {
+        self.try_build(table)
+            .expect("import table build failed: use try_build() for fallible serialization")
+    }
+
+    /// Build the import table with checked offsets and sizes.
+    pub fn try_build(&self, table: &ImportTable) -> Result<(Vec<u8>, u32, u32)> {
+        let total_size = self.try_calculate_size(table)?;
+        if total_size == 0 {
+            return Ok((Vec::new(), 0, 0));
+        }
+        let size = u32::try_from(total_size)
+            .map_err(|_| Error::invalid_data_directory("import table exceeds u32"))?;
+        let end = self
+            .base_rva
+            .checked_add(size)
+            .ok_or_else(|| Error::invalid_data_directory("import table RVA range overflow"))?;
+        if !self.is_64bit && end > 0x8000_0000 {
+            return Err(Error::invalid_data_directory(
+                "PE32 import hint/name RVAs would overlap the ordinal flag",
+            ));
+        }
+        Ok(self.build_unchecked(table))
+    }
+
+    fn build_unchecked(&self, table: &ImportTable) -> (Vec<u8>, u32, u32) {
         if table.dlls.is_empty() {
             return (Vec::new(), 0, 0);
         }

@@ -11,23 +11,35 @@ repos:
       - id: check-merge-conflict
       - id: check-added-large-files
 
-  - repo: https://github.com/doublify/pre-commit-rust
-    rev: v1.0
-    hooks:
-      - id: fmt
-      - id: cargo-check
-
   - repo: local
     hooks:
-      - id: clippy
-        name: clippy (default features)
-        entry: cargo clippy --all-targets -- -D warnings
+      - id: rustfmt
+        name: rustfmt (crate)
+        entry: cargo fmt --all -- --check
         language: system
-        types: [rust]
+        files: '^(src|tests)/.*\.rs$'
+        pass_filenames: false
+      - id: rustfmt-fuzz
+        name: rustfmt (fuzz package)
+        entry: cargo fmt --manifest-path fuzz/Cargo.toml -- --check
+        language: system
+        files: '^fuzz/fuzz_targets/.*\.rs$'
+        pass_filenames: false
+      - id: clippy-all-features
+        name: clippy (all features and targets)
+        entry: cargo clippy --all-features --all-targets -- -D warnings
+        language: system
+        files: '^(Cargo\.(toml|lock)|rust-toolchain\.toml|src/.*\.rs|tests/.*\.rs)$'
         pass_filenames: false
       - id: clippy-no-std
-        name: clippy (no_std + alloc)
-        entry: cargo clippy --no-default-features -- -D warnings
+        name: clippy (no_std + alloc, all targets)
+        entry: cargo clippy --no-default-features --all-targets -- -D warnings
         language: system
-        types: [rust]
+        files: '^(Cargo\.(toml|lock)|rust-toolchain\.toml|src/.*\.rs|tests/.*\.rs)$'
+        pass_filenames: false
+      - id: clippy-fuzz
+        name: clippy (fuzz package)
+        entry: cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
+        language: system
+        files: '^(Cargo\.(toml|lock)|rust-toolchain\.toml|src/.*\.rs|fuzz/(Cargo\.(toml|lock)|fuzz_targets/.*\.rs))$'
         pass_filenames: false

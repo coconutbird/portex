@@ -8,11 +8,12 @@
 //! # Examples
 //!
 //! ```no_run
-//! use portex::PE;
+//! use portex::PeImage;
 //!
-//! let pe = PE::from_file("managed.exe")?;
+//! # let file_bytes: &[u8] = &[];
+//! let pe = PeImage::parse(file_bytes)?;
 //!
-//! if let Some(cli) = pe.cli_header()? {
+//! if let Some(cli) = pe.clr_header()? {
 //!     println!("CLR runtime: {}.{}", cli.major_runtime_version, cli.minor_runtime_version);
 //!     println!("Metadata RVA: {:#x}, size: {}", cli.metadata_rva, cli.metadata_size);
 //!     println!("Entry point token: {:#x}", cli.entry_point_token_or_rva);
@@ -109,8 +110,17 @@ impl CliHeader {
         let read_u16 =
             |offset: usize| -> u16 { u16::from_le_bytes([data[offset], data[offset + 1]]) };
 
+        let cb = read_u32(0);
+        if cb < Self::SIZE as u32 {
+            return Err(Error::invalid_data_directory(format!(
+                "CLR header declares size {}, expected at least {}",
+                cb,
+                Self::SIZE
+            )));
+        }
+
         Ok(Self {
-            cb: read_u32(0),
+            cb,
             major_runtime_version: read_u16(4),
             minor_runtime_version: read_u16(6),
             metadata_rva: read_u32(8),

@@ -1,7 +1,7 @@
 //! COFF File Header structures and parsing.
 
 use crate::prelude::*;
-use crate::reader::Reader;
+use crate::reader::ReadAt;
 use crate::{Error, Result};
 
 /// PE signature "PE\0\0".
@@ -16,22 +16,64 @@ pub enum MachineType {
     Unknown = 0x0000,
     /// Intel 386 or later.
     I386 = 0x014C,
+    /// MIPS little-endian R4000.
+    R4000 = 0x0166,
+    /// MIPS little-endian WCE v2.
+    WceMipsV2 = 0x0169,
+    /// Hitachi SH3.
+    Sh3 = 0x01A2,
+    /// Hitachi SH3 DSP.
+    Sh3Dsp = 0x01A3,
+    /// Hitachi SH4.
+    Sh4 = 0x01A6,
+    /// Hitachi SH5.
+    Sh5 = 0x01A8,
     /// x64 (AMD64).
     Amd64 = 0x8664,
+    /// MIPS16.
+    Mips16 = 0x0266,
+    /// MIPS with FPU.
+    MipsFpu = 0x0366,
+    /// MIPS16 with FPU.
+    MipsFpu16 = 0x0466,
     /// ARM little endian.
     Arm = 0x01C0,
+    /// ARM Thumb.
+    Thumb = 0x01C2,
     /// ARM64 little endian.
     Arm64 = 0xAA64,
+    /// ARM64 emulation-compatible ABI.
+    Arm64Ec = 0xA641,
+    /// Hybrid ARM64X image.
+    Arm64X = 0xA64E,
     /// ARM Thumb-2 little endian.
     ArmNt = 0x01C4,
+    /// Matsushita AM33.
+    Am33 = 0x01D3,
     /// EFI byte code.
     Ebc = 0x0EBC,
     /// Intel Itanium.
     Ia64 = 0x0200,
+    /// DEC Alpha AXP.
+    Alpha = 0x0184,
+    /// DEC Alpha AXP 64-bit.
+    Alpha64 = 0x0284,
+    /// IBM PowerPC little endian.
+    PowerPc = 0x01F0,
+    /// IBM PowerPC with floating point support.
+    PowerPcFp = 0x01F1,
+    /// Mitsubishi M32R little endian.
+    M32R = 0x9041,
     /// RISC-V 32-bit.
     RiscV32 = 0x5032,
     /// RISC-V 64-bit.
     RiscV64 = 0x5064,
+    /// RISC-V 128-bit.
+    RiscV128 = 0x5128,
+    /// LoongArch 32-bit.
+    LoongArch32 = 0x6232,
+    /// LoongArch 64-bit.
+    LoongArch64 = 0x6264,
 }
 
 impl MachineType {
@@ -40,16 +82,59 @@ impl MachineType {
         match value {
             0x0000 => Some(Self::Unknown),
             0x014C => Some(Self::I386),
+            0x0166 => Some(Self::R4000),
+            0x0169 => Some(Self::WceMipsV2),
+            0x01A2 => Some(Self::Sh3),
+            0x01A3 => Some(Self::Sh3Dsp),
+            0x01A6 => Some(Self::Sh4),
+            0x01A8 => Some(Self::Sh5),
             0x8664 => Some(Self::Amd64),
+            0x0266 => Some(Self::Mips16),
+            0x0366 => Some(Self::MipsFpu),
+            0x0466 => Some(Self::MipsFpu16),
             0x01C0 => Some(Self::Arm),
+            0x01C2 => Some(Self::Thumb),
             0xAA64 => Some(Self::Arm64),
+            0xA641 => Some(Self::Arm64Ec),
+            0xA64E => Some(Self::Arm64X),
             0x01C4 => Some(Self::ArmNt),
+            0x01D3 => Some(Self::Am33),
             0x0EBC => Some(Self::Ebc),
             0x0200 => Some(Self::Ia64),
+            0x0184 => Some(Self::Alpha),
+            0x0284 => Some(Self::Alpha64),
+            0x01F0 => Some(Self::PowerPc),
+            0x01F1 => Some(Self::PowerPcFp),
+            0x9041 => Some(Self::M32R),
             0x5032 => Some(Self::RiscV32),
             0x5064 => Some(Self::RiscV64),
+            0x5128 => Some(Self::RiscV128),
+            0x6232 => Some(Self::LoongArch32),
+            0x6264 => Some(Self::LoongArch64),
             _ => None,
         }
+    }
+
+    /// Whether this machine normally uses a PE32+ optional header.
+    pub const fn is_64_bit(self) -> bool {
+        matches!(
+            self,
+            Self::Amd64
+                | Self::Ebc
+                | Self::Arm64
+                | Self::Arm64Ec
+                | Self::Arm64X
+                | Self::Ia64
+                | Self::Alpha64
+                | Self::RiscV64
+                | Self::RiscV128
+                | Self::LoongArch64
+        )
+    }
+
+    /// Whether this machine normally uses a PE32 optional header.
+    pub const fn is_32_bit(self) -> bool {
+        !matches!(self, Self::Unknown) && !self.is_64_bit()
     }
 }
 
@@ -160,8 +245,8 @@ impl CoffHeader {
         self.characteristics & characteristics::EXECUTABLE_IMAGE != 0
     }
 
-    /// Parse a COFF header from a Reader at the given offset.
-    pub fn read_from<R: Reader>(reader: &R, offset: u64) -> Result<Self> {
+    /// Parse a COFF header from a positional reader at the given offset.
+    pub fn read_from<R: ReadAt>(reader: &R, offset: u64) -> Result<Self> {
         let mut buf = [0u8; Self::SIZE];
         reader.read_exact_at(offset, &mut buf)?;
         Self::parse(&buf)
@@ -176,7 +261,7 @@ impl CoffHeader {
 }
 
 /// Verify PE signature at the given offset.
-pub fn verify_pe_signature<R: Reader>(reader: &R, offset: u64) -> Result<()> {
+pub fn verify_pe_signature<R: ReadAt>(reader: &R, offset: u64) -> Result<()> {
     let sig = reader.read_u32_at(offset)?;
     if sig != PE_SIGNATURE {
         return Err(Error::invalid_pe_signature());

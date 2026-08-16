@@ -3,13 +3,13 @@
 //! # Example
 //!
 //! ```no_run
-//! use portex::{PEBuilder, MachineType, Subsystem};
+//! use portex::{MachineType, PeBuilder, Subsystem};
 //! use portex::section::characteristics;
 //!
 //! let code = vec![0xCC; 0x100]; // INT3 instructions
 //! let data = vec![0u8; 0x50];
 //!
-//! let pe = PEBuilder::new()
+//! let pe = PeBuilder::new()
 //!     .machine(MachineType::Amd64)
 //!     .subsystem(Subsystem::WindowsCui)
 //!     .entry_point(0x1000)  // RVA will be adjusted after layout
@@ -24,13 +24,14 @@ use crate::dos::{DOS_SIGNATURE, DosHeader};
 use crate::optional::{
     OptionalHeader, OptionalHeader32, OptionalHeader64, PE32_MAGIC, PE32PLUS_MAGIC, Subsystem,
 };
-use crate::pe::PE;
+use crate::pe::PeImage;
 use crate::prelude::*;
 use crate::section::{Section, SectionHeader};
+use crate::{Error, Result};
 
 /// Builder for creating new PE files from scratch.
 #[derive(Debug, Clone)]
-pub struct PEBuilder {
+pub struct PeBuilder {
     machine: MachineType,
     subsystem: Subsystem,
     is_64bit: bool,
@@ -43,13 +44,13 @@ pub struct PEBuilder {
     sections: Vec<(String, Vec<u8>, u32)>, // (name, data, characteristics)
 }
 
-impl Default for PEBuilder {
+impl Default for PeBuilder {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl PEBuilder {
+impl PeBuilder {
     /// Create a new PE builder with default settings (64-bit console application).
     pub fn new() -> Self {
         Self {
@@ -70,10 +71,7 @@ impl PEBuilder {
     pub fn machine(mut self, machine: MachineType) -> Self {
         self.machine = machine;
         // Auto-detect 64-bit from machine type
-        self.is_64bit = matches!(
-            machine,
-            MachineType::Amd64 | MachineType::Arm64 | MachineType::Ia64
-        );
+        self.is_64bit = machine.is_64_bit();
         // Adjust default image base
         if !self.is_64bit {
             self.image_base = 0x0040_0000; // Default for 32-bit
@@ -136,8 +134,48 @@ impl PEBuilder {
         self
     }
 
-    /// Build the PE file.
-    pub fn build(self) -> PE {
+    /// Build the PE image, panicking if the requested layout is invalid.
+    /// Prefer [`Self::try_build`] when values come from an untrusted source.
+    pub fn build(self) -> PeImage {
+        self.try_build()
+            .expect("PE builder failed: use PeBuilder::try_build() to handle invalid settings")
+    }
+
+    /// Build the PE image with checked machine, width, alignment, and size
+    /// relationships.
+    pub fn try_build(self) -> Result<PeImage> {
+        if !self.is_64bit && self.image_base > u64::from(u32::MAX) {
+            return Err(Error::invalid_section(format!(
+                "PE32 image base {:#x} exceeds u32",
+                self.image_base
+            )));
+        }
+        if self.image_base & 0xffff != 0 {
+            return Err(Error::invalid_section(format!(
+                "image base {:#x} is not 64-KiB aligned",
+                self.image_base
+            )));
+        }
+        if self.machine != MachineType::Unknown && self.machine.is_64_bit() != self.is_64bit {
+            return Err(Error::invalid_section(format!(
+                "machine {:?} is incompatible with a {} optional header",
+                self.machine,
+                if self.is_64bit { "PE32+" } else { "PE32" }
+            )));
+        }
+        if self.sections.len() > crate::pe::MAX_NUMBER_OF_SECTIONS {
+            return Err(Error::invalid_section(format!(
+                "section count {} exceeds the PE image limit of {}",
+                self.sections.len(),
+                crate::pe::MAX_NUMBER_OF_SECTIONS
+            )));
+        }
+        for (name, data, _) in &self.sections {
+            u32::try_from(data.len()).map_err(|_| {
+                Error::invalid_section(format!("section '{name}' data exceeds u32"))
+            })?;
+        }
+
         // Create DOS header
         let dos_header = self.create_dos_header();
 
@@ -151,16 +189,18 @@ impl PEBuilder {
         let sections = self.create_sections();
 
         // Create PE and update layout
-        let mut pe = PE {
+        let mut pe = PeImage {
             dos_header,
             dos_stub: Self::default_dos_stub(),
             coff_header,
             optional_header,
             sections,
+            source_layout: crate::pe::SourceLayout::File,
+            runtime_image_base: None,
         };
 
-        pe.update_layout();
-        pe
+        pe.try_update_layout()?;
+        Ok(pe)
     }
 
     fn create_dos_header(&self) -> DosHeader {
@@ -299,6 +339,8 @@ impl PEBuilder {
                 Section {
                     header,
                     data: data.clone(),
+                    mapped_raw_size: None,
+                    mapped_data_len: 0,
                 }
             })
             .collect()
@@ -324,7 +366,7 @@ mod tests {
     #[test]
     fn test_builder_creates_valid_pe() {
         let code = vec![0xCC; 0x100];
-        let pe = PEBuilder::new()
+        let pe = PeBuilder::new()
             .machine(MachineType::Amd64)
             .subsystem(Subsystem::WindowsCui)
             .entry_point(0x1000)
@@ -342,7 +384,7 @@ mod tests {
 
     #[test]
     fn test_builder_32bit() {
-        let pe = PEBuilder::new()
+        let pe = PeBuilder::new()
             .machine(MachineType::I386)
             .add_section(
                 ".text",
@@ -357,7 +399,7 @@ mod tests {
 
     #[test]
     fn test_builder_roundtrip() {
-        let pe = PEBuilder::new()
+        let pe = PeBuilder::new()
             .machine(MachineType::Amd64)
             .subsystem(Subsystem::WindowsGui)
             .add_section(
@@ -374,7 +416,7 @@ mod tests {
 
         // Build to bytes and parse back
         let bytes = pe.build();
-        let parsed = PE::parse(&bytes).expect("Should parse built PE");
+        let parsed = PeImage::parse(&bytes).expect("Should parse built PE");
 
         assert_eq!(parsed.sections.len(), 2);
         assert_eq!(parsed.sections[0].name(), ".text");

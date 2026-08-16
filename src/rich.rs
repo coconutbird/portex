@@ -4,6 +4,7 @@
 //! between the DOS stub and PE signature. It contains build tool information.
 
 use crate::prelude::*;
+use crate::{Error, Result};
 
 /// Rich header magic value ("Rich" XORed with key).
 const RICH_MAGIC: u32 = 0x68636952; // "Rich"
@@ -73,7 +74,7 @@ impl RichEntry {
 }
 
 /// Parsed Rich Header.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RichHeader {
     /// XOR key used for encoding.
     pub key: u32,
@@ -90,24 +91,26 @@ impl RichHeader {
     /// `data` should start from beginning of file.
     /// Returns None if no Rich header found.
     pub fn parse(data: &[u8]) -> Option<Self> {
-        // Minimum: DOS header (64) + some stub
-        if data.len() < 0x80 {
+        // A Rich header lives between the fixed DOS header and the PE header.
+        if data.len() < 0x40 {
             return None;
         }
 
         // Get PE offset from DOS header
         let pe_offset =
             u32::from_le_bytes([data[0x3C], data[0x3D], data[0x3E], data[0x3F]]) as usize;
-        if pe_offset >= data.len() || pe_offset < 0x80 {
+        if pe_offset.checked_add(4)? > data.len() || pe_offset < 0x40 + 24 {
             return None;
         }
 
-        // Search backwards from PE header for "Rich" marker
-        // Rich header ends with: "Rich" XOR key, key, key, key
-        let search_area = &data[0x80..pe_offset];
-        let mut rich_pos = None;
-
-        for i in (0..search_area.len().saturating_sub(4)).rev() {
+        // Search backwards for the literal "Rich" marker followed by its XOR
+        // key. Older Portex versions incorrectly XORed the marker, so accept
+        // that spelling while parsing but never emit it.
+        let search_area = &data[0x40..pe_offset];
+        if search_area.len() < 8 {
+            return None;
+        }
+        for i in (0..=search_area.len() - 8).rev() {
             let value = u32::from_le_bytes([
                 search_area[i],
                 search_area[i + 1],
@@ -115,79 +118,72 @@ impl RichHeader {
                 search_area[i + 3],
             ]);
 
-            // Check if this could be "Rich" XORed with something
-            let possible_key = value ^ RICH_MAGIC;
-
-            // Verify by checking if next dword is the same key
-            if i + 8 <= search_area.len() {
-                let next = u32::from_le_bytes([
-                    search_area[i + 4],
-                    search_area[i + 5],
-                    search_area[i + 6],
-                    search_area[i + 7],
-                ]);
-                if next == possible_key {
-                    rich_pos = Some((i + 0x80, possible_key));
-                    break;
-                }
-            }
-        }
-
-        let (rich_offset, key) = rich_pos?;
-
-        // Now search backwards for DanS marker
-        let mut dans_offset = None;
-        let header_area = &data[0x80..rich_offset];
-
-        for i in 0..header_area.len().saturating_sub(4) {
-            let value = u32::from_le_bytes([
-                header_area[i],
-                header_area[i + 1],
-                header_area[i + 2],
-                header_area[i + 3],
+            let key = u32::from_le_bytes([
+                search_area[i + 4],
+                search_area[i + 5],
+                search_area[i + 6],
+                search_area[i + 7],
             ]);
+            if value != RICH_MAGIC && value ^ key != RICH_MAGIC {
+                continue;
+            }
+            let rich_offset = i + 0x40;
+            if rich_offset < 0x40 + 16 {
+                continue;
+            }
+            for start_offset in (0x40..=rich_offset - 16).rev() {
+                let encoded_dans = u32::from_le_bytes([
+                    data[start_offset],
+                    data[start_offset + 1],
+                    data[start_offset + 2],
+                    data[start_offset + 3],
+                ]);
+                let entries_size = rich_offset - start_offset - 16;
+                if encoded_dans ^ key != DANS_MAGIC || !entries_size.is_multiple_of(8) {
+                    continue;
+                }
+                if data[start_offset + 4..start_offset + 16]
+                    .chunks_exact(4)
+                    .any(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]) != key)
+                {
+                    continue;
+                }
 
-            if value ^ key == DANS_MAGIC {
-                dans_offset = Some(i + 0x80);
-                break;
+                let mut entries = Vec::with_capacity(entries_size / 8);
+                for chunk in data[start_offset + 16..rich_offset].chunks_exact(8) {
+                    let comp_id =
+                        u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) ^ key;
+                    let count = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]) ^ key;
+                    if comp_id != 0 || count != 0 {
+                        entries.push(RichEntry::from_comp_id(comp_id, count));
+                    }
+                }
+                return Some(Self {
+                    key,
+                    entries,
+                    offset: start_offset,
+                    size: rich_offset + 8 - start_offset,
+                });
             }
         }
-
-        let start_offset = dans_offset?;
-
-        // Parse entries between DanS and Rich
-        // Format: DanS, padding (3 dwords), then pairs of (comp_id, count)
-        let mut entries = Vec::new();
-        let entry_area = &data[start_offset + 16..rich_offset]; // Skip DanS + 3 padding dwords
-
-        for chunk in entry_area.chunks(8) {
-            if chunk.len() < 8 {
-                break;
-            }
-
-            let comp_id_xor = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-            let count_xor = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
-
-            let comp_id = comp_id_xor ^ key;
-            let count = count_xor ^ key;
-
-            if comp_id != 0 || count != 0 {
-                entries.push(RichEntry::from_comp_id(comp_id, count));
-            }
-        }
-
-        Some(Self {
-            key,
-            entries,
-            offset: start_offset,
-            size: rich_offset + 8 - start_offset, // Include "Rich" + key
-        })
+        None
     }
 
     /// Build Rich header bytes.
     pub fn build(&self) -> Vec<u8> {
+        self.try_build()
+            .expect("Rich-header build failed: use try_build()")
+    }
+
+    /// Build a Rich header with checked entry-size arithmetic.
+    pub fn try_build(&self) -> Result<Vec<u8>> {
         // Size: DanS (4) + padding (12) + entries (8 each) + Rich (4) + key (4)
-        let size = 16 + self.entries.len() * 8 + 8;
+        let size = self
+            .entries
+            .len()
+            .checked_mul(8)
+            .and_then(|size| size.checked_add(24))
+            .ok_or_else(|| Error::generic("Rich-header size overflow"))?;
         let mut buf = vec![0u8; size];
 
         let key = self.key;
@@ -209,10 +205,10 @@ impl RichHeader {
 
         // Rich marker
         let rich_offset = 16 + self.entries.len() * 8;
-        buf[rich_offset..rich_offset + 4].copy_from_slice(&(RICH_MAGIC ^ key).to_le_bytes());
+        buf[rich_offset..rich_offset + 4].copy_from_slice(&RICH_MAGIC.to_le_bytes());
         buf[rich_offset + 4..rich_offset + 8].copy_from_slice(&key.to_le_bytes());
 
-        buf
+        Ok(buf)
     }
 
     /// Calculate a checksum/key from the entries (simplified).
@@ -304,28 +300,52 @@ impl RichBuilder {
 
     /// Calculate the size of the built Rich header.
     pub fn calculate_size(&self) -> usize {
-        // DanS (4) + padding (12) + entries (8 each) + Rich (4) + key (4)
-        16 + self.entries.len() * 8 + 8
+        self.try_calculate_size()
+            .expect("Rich-header size overflow: use try_calculate_size()")
+    }
+
+    /// Calculate the encoded size with checked arithmetic.
+    pub fn try_calculate_size(&self) -> Result<usize> {
+        self.entries
+            .len()
+            .checked_mul(8)
+            .and_then(|size| size.checked_add(24))
+            .ok_or_else(|| Error::generic("Rich-header size overflow"))
     }
 
     /// Build with a specific XOR key.
     /// Returns (data, size).
     pub fn build_with_key(&self, key: u32) -> (Vec<u8>, u32) {
+        self.try_build_with_key(key)
+            .expect("Rich-header build failed: use try_build_with_key()")
+    }
+
+    /// Build with a specific key and checked encoded size.
+    pub fn try_build_with_key(&self, key: u32) -> Result<(Vec<u8>, u32)> {
+        let size = self.try_calculate_size()?;
         let header = RichHeader {
             key,
             entries: self.entries.clone(),
             offset: 0,
-            size: self.calculate_size(),
+            size,
         };
-        let data = header.build();
-        (data, header.size as u32)
+        let data = header.try_build()?;
+        let size = u32::try_from(header.size)
+            .map_err(|_| Error::generic("Rich-header size exceeds u32"))?;
+        Ok((data, size))
     }
 
     /// Build with a calculated key based on the DOS header.
     /// Returns (data, size).
     pub fn build_with_dos_header(&self, dos_header: &[u8]) -> (Vec<u8>, u32) {
+        self.try_build_with_dos_header(dos_header)
+            .expect("Rich-header build failed: use try_build_with_dos_header()")
+    }
+
+    /// Build using a calculated key with checked encoded size.
+    pub fn try_build_with_dos_header(&self, dos_header: &[u8]) -> Result<(Vec<u8>, u32)> {
         let key = RichHeader::calculate_key(&self.entries, dos_header);
-        self.build_with_key(key)
+        self.try_build_with_key(key)
     }
 
     /// Build into a RichHeader struct with a specific key.
@@ -419,6 +439,22 @@ mod tests {
         assert_eq!(parsed.entries.len(), 2);
         assert_eq!(parsed.entries[0].product_id, 0x0104);
         assert_eq!(parsed.entries[1].product_id, 0x0105);
+    }
+
+    #[test]
+    fn pe_image_parses_rich_header_from_its_dos_stub() {
+        let mut image = crate::PeBuilder::new().try_build().unwrap();
+        let (encoded, _) = RichBuilder::new()
+            .add(0x0104, 30729, 5)
+            .try_build_with_key(0x1234_5678)
+            .unwrap();
+        let start = image.dos_stub.len() - encoded.len();
+        image.dos_stub[start..].copy_from_slice(&encoded);
+
+        let parsed = image.rich_header().unwrap();
+        assert_eq!(parsed.key, 0x1234_5678);
+        assert_eq!(parsed.entries.len(), 1);
+        assert_eq!(parsed.entries[0].product_id, 0x0104);
     }
 
     #[test]
