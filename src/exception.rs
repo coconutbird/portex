@@ -330,7 +330,21 @@ impl UnwindInfo {
 
     /// Serialize a complete, internally consistent x64 unwind record.
     pub fn try_to_bytes(&self) -> Result<Vec<u8>> {
+        self.try_to_bytes_with_handler_data(&self.handler_data)
+    }
+
+    /// Serialize with a borrowed replacement language payload.
+    ///
+    /// The record must remain internally consistent, and nonempty payloads
+    /// require an exception handler. This avoids an intermediate owned copy
+    /// when a caller emits several records using the same language metadata.
+    pub fn try_to_bytes_with_handler_data(&self, handler_data: &[u8]) -> Result<Vec<u8>> {
         self.validate()?;
+        if !handler_data.is_empty() && self.exception_handler.is_none() {
+            return Err(Error::invalid_data_directory(
+                "borrowed exception-handler data present without a handler",
+            ));
+        }
         let codes_size = self
             .unwind_codes
             .len()
@@ -348,7 +362,7 @@ impl UnwindInfo {
             .exception_handler
             .map(|_| {
                 4usize
-                    .checked_add(self.handler_data.len())
+                    .checked_add(handler_data.len())
                     .ok_or_else(|| Error::invalid_data_directory("unwind handler size overflow"))
             })
             .transpose()?
@@ -377,7 +391,7 @@ impl UnwindInfo {
         } else if let Some(handler) = self.exception_handler {
             let offset = Self::MIN_SIZE + aligned_codes_size;
             buf[offset..offset + 4].copy_from_slice(&handler.to_le_bytes());
-            buf[offset + 4..].copy_from_slice(&self.handler_data);
+            buf[offset + 4..].copy_from_slice(handler_data);
         }
 
         Ok(buf)
@@ -837,6 +851,31 @@ impl ExceptionBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn borrowed_handler_payload_is_serialized_without_owned_replacement() {
+        let info = UnwindInfo {
+            version_flags: 1 | (UNW_FLAG_EHANDLER << 3),
+            exception_handler: Some(0x3000),
+            handler_data: vec![0xaa],
+            ..UnwindInfo::default()
+        };
+        let bytes = info
+            .try_to_bytes_with_handler_data(&[0x11, 0x22, 0x33])
+            .expect("borrowed language metadata is valid");
+        assert_eq!(&bytes[4..8], &0x3000_u32.to_le_bytes());
+        assert_eq!(&bytes[8..], &[0x11, 0x22, 0x33]);
+        assert_eq!(info.handler_data, [0xaa]);
+        assert_eq!(
+            &info.try_to_bytes().expect("owned metadata remains valid")[8..],
+            &[0xaa]
+        );
+        let unhandled = UnwindInfo {
+            version_flags: 1,
+            ..UnwindInfo::default()
+        };
+        assert!(unhandled.try_to_bytes_with_handler_data(&[1]).is_err());
+    }
 
     #[test]
     fn test_runtime_function_size() {

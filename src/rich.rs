@@ -143,14 +143,16 @@ impl RichHeader {
                     continue;
                 }
                 if data[start_offset + 4..start_offset + 16]
-                    .chunks_exact(4)
-                    .any(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]) != key)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .any(|word| u32::from_le_bytes(*word) != key)
                 {
                     continue;
                 }
 
                 let mut entries = Vec::with_capacity(entries_size / 8);
-                for chunk in data[start_offset + 16..rich_offset].chunks_exact(8) {
+                for chunk in data[start_offset + 16..rich_offset].as_chunks::<8>().0 {
                     let comp_id =
                         u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) ^ key;
                     let count = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]) ^ key;

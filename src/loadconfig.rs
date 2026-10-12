@@ -6,6 +6,41 @@
 use crate::prelude::*;
 use crate::{Error, Result};
 
+/// The structure's Size bounds the available versioned prefix. Zero Size
+/// retains the legacy directory-size convention, not an absent directory.
+fn directory_prefix(data: &[u8]) -> Result<(u32, &[u8])> {
+    const HEADER_SIZE: usize = core::mem::size_of::<u32>();
+    if data.len() < HEADER_SIZE {
+        return Err(Error::buffer_too_small(HEADER_SIZE, data.len()));
+    }
+    let size = u32::from_le_bytes(
+        data[..HEADER_SIZE]
+            .try_into()
+            .expect("the Size field is present"),
+    );
+    let declared_size = if size == 0 { data.len() } else { size as usize };
+    if declared_size < HEADER_SIZE || declared_size > data.len() {
+        return Err(Error::invalid_data_directory(format!(
+            "load-config size {declared_size} is outside the available {} bytes",
+            data.len()
+        )));
+    }
+    Ok((size, &data[..declared_size]))
+}
+
+/// A version may omit a whole field, but never supply only part of its value.
+fn directory_field<const N: usize>(data: &[u8], offset: usize) -> Result<[u8; N]> {
+    if offset >= data.len() {
+        return Ok([0; N]);
+    }
+    let bytes = data.get(offset..offset + N).ok_or_else(|| {
+        Error::invalid_data_directory(format!("load-config field at {offset:#x} is truncated"))
+    })?;
+    Ok(bytes
+        .try_into()
+        .expect("the complete field has its declared width"))
+}
+
 /// IMAGE_LOAD_CONFIG_DIRECTORY32 (Windows 10+) - 192 bytes
 /// Note: Size varies by Windows version; we parse what's available.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -65,86 +100,44 @@ pub struct LoadConfigDirectory32 {
 }
 
 impl LoadConfigDirectory32 {
-    /// Minimum size for basic parsing.
+    /// Default emitted size before optional SafeSEH and CFG fields.
     pub const MIN_SIZE: usize = 64;
     /// Size through `GuardFlags`; later versioned fields are preserved opaquely.
     pub const SIZE_WITH_CFG: usize = 92;
 
+    /// Parses a whole-field versioned prefix, including legacy short records.
     pub fn parse(data: &[u8]) -> Result<Self> {
-        if data.len() < Self::MIN_SIZE {
-            return Err(Error::buffer_too_small(Self::MIN_SIZE, data.len()));
-        }
-
-        let size = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-        let declared_size = if size == 0 { data.len() } else { size as usize };
-        if declared_size < Self::MIN_SIZE || declared_size > data.len() {
-            return Err(Error::invalid_data_directory(format!(
-                "load-config size {} is outside the available {} bytes",
-                declared_size,
-                data.len()
-            )));
-        }
-        let data = &data[..declared_size];
-        let mut config = Self {
+        let (size, data) = directory_prefix(data)?;
+        let word = |offset| directory_field(data, offset).map(u32::from_le_bytes);
+        let half = |offset| directory_field(data, offset).map(u16::from_le_bytes);
+        Ok(Self {
             size,
-            time_date_stamp: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
-            major_version: u16::from_le_bytes([data[8], data[9]]),
-            minor_version: u16::from_le_bytes([data[10], data[11]]),
-            global_flags_clear: u32::from_le_bytes([data[12], data[13], data[14], data[15]]),
-            global_flags_set: u32::from_le_bytes([data[16], data[17], data[18], data[19]]),
-            critical_section_default_timeout: u32::from_le_bytes([
-                data[20], data[21], data[22], data[23],
-            ]),
-            de_commit_free_block_threshold: u32::from_le_bytes([
-                data[24], data[25], data[26], data[27],
-            ]),
-            de_commit_total_free_threshold: u32::from_le_bytes([
-                data[28], data[29], data[30], data[31],
-            ]),
-            lock_prefix_table: u32::from_le_bytes([data[32], data[33], data[34], data[35]]),
-            maximum_allocation_size: u32::from_le_bytes([data[36], data[37], data[38], data[39]]),
-            virtual_memory_threshold: u32::from_le_bytes([data[40], data[41], data[42], data[43]]),
-            process_heap_flags: u32::from_le_bytes([data[44], data[45], data[46], data[47]]),
-            process_affinity_mask: u32::from_le_bytes([data[48], data[49], data[50], data[51]]),
-            csd_version: u16::from_le_bytes([data[52], data[53]]),
-            dependent_load_flags: u16::from_le_bytes([data[54], data[55]]),
-            edit_list: u32::from_le_bytes([data[56], data[57], data[58], data[59]]),
-            security_cookie: u32::from_le_bytes([data[60], data[61], data[62], data[63]]),
-            ..Default::default()
-        };
-
-        // Parse SEH fields if present (offset 64-71)
-        if data.len() >= 72 {
-            config.se_handler_table = u32::from_le_bytes([data[64], data[65], data[66], data[67]]);
-            config.se_handler_count = u32::from_le_bytes([data[68], data[69], data[70], data[71]]);
-        }
-
-        // Parse each versioned CFG field that is present.
-        if data.len() >= 76 {
-            config.guard_cf_check_function_pointer =
-                u32::from_le_bytes([data[72], data[73], data[74], data[75]]);
-        }
-        if data.len() >= 80 {
-            config.guard_cf_dispatch_function_pointer =
-                u32::from_le_bytes([data[76], data[77], data[78], data[79]]);
-        }
-        if data.len() >= 84 {
-            config.guard_cf_function_table =
-                u32::from_le_bytes([data[80], data[81], data[82], data[83]]);
-        }
-        if data.len() >= 88 {
-            config.guard_cf_function_count =
-                u32::from_le_bytes([data[84], data[85], data[86], data[87]]);
-        }
-        if data.len() >= Self::SIZE_WITH_CFG {
-            config.guard_flags = u32::from_le_bytes([data[88], data[89], data[90], data[91]]);
-        }
-
-        if data.len() > Self::SIZE_WITH_CFG {
-            config.trailing_data = data[Self::SIZE_WITH_CFG..].to_vec();
-        }
-
-        Ok(config)
+            time_date_stamp: word(4)?,
+            major_version: half(8)?,
+            minor_version: half(10)?,
+            global_flags_clear: word(12)?,
+            global_flags_set: word(16)?,
+            critical_section_default_timeout: word(20)?,
+            de_commit_free_block_threshold: word(24)?,
+            de_commit_total_free_threshold: word(28)?,
+            lock_prefix_table: word(32)?,
+            maximum_allocation_size: word(36)?,
+            virtual_memory_threshold: word(40)?,
+            process_heap_flags: word(44)?,
+            process_affinity_mask: word(48)?,
+            csd_version: half(52)?,
+            dependent_load_flags: half(54)?,
+            edit_list: word(56)?,
+            security_cookie: word(60)?,
+            se_handler_table: word(64)?,
+            se_handler_count: word(68)?,
+            guard_cf_check_function_pointer: word(72)?,
+            guard_cf_dispatch_function_pointer: word(76)?,
+            guard_cf_function_table: word(80)?,
+            guard_cf_function_count: word(84)?,
+            guard_flags: word(88)?,
+            trailing_data: data.get(Self::SIZE_WITH_CFG..).unwrap_or_default().to_vec(),
+        })
     }
 
     /// Serialize to bytes (up to the size field value).
@@ -278,106 +271,44 @@ pub struct LoadConfigDirectory64 {
 }
 
 impl LoadConfigDirectory64 {
+    /// Default emitted size before optional CFG fields.
     pub const MIN_SIZE: usize = 112;
     pub const SIZE_WITH_CFG: usize = 148;
 
+    /// Parses a whole-field versioned prefix, including legacy short records.
     pub fn parse(data: &[u8]) -> Result<Self> {
-        if data.len() < Self::MIN_SIZE {
-            return Err(Error::buffer_too_small(Self::MIN_SIZE, data.len()));
-        }
-
-        let size = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-        let declared_size = if size == 0 { data.len() } else { size as usize };
-        if declared_size < Self::MIN_SIZE || declared_size > data.len() {
-            return Err(Error::invalid_data_directory(format!(
-                "load-config size {} is outside the available {} bytes",
-                declared_size,
-                data.len()
-            )));
-        }
-        let data = &data[..declared_size];
-
-        let mut config = Self {
+        let (size, data) = directory_prefix(data)?;
+        let wide = |offset| directory_field(data, offset).map(u64::from_le_bytes);
+        let word = |offset| directory_field(data, offset).map(u32::from_le_bytes);
+        let half = |offset| directory_field(data, offset).map(u16::from_le_bytes);
+        Ok(Self {
             size,
-            time_date_stamp: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
-            major_version: u16::from_le_bytes([data[8], data[9]]),
-            minor_version: u16::from_le_bytes([data[10], data[11]]),
-            global_flags_clear: u32::from_le_bytes([data[12], data[13], data[14], data[15]]),
-            global_flags_set: u32::from_le_bytes([data[16], data[17], data[18], data[19]]),
-            critical_section_default_timeout: u32::from_le_bytes([
-                data[20], data[21], data[22], data[23],
-            ]),
-            de_commit_free_block_threshold: u64::from_le_bytes([
-                data[24], data[25], data[26], data[27], data[28], data[29], data[30], data[31],
-            ]),
-            de_commit_total_free_threshold: u64::from_le_bytes([
-                data[32], data[33], data[34], data[35], data[36], data[37], data[38], data[39],
-            ]),
-            lock_prefix_table: u64::from_le_bytes([
-                data[40], data[41], data[42], data[43], data[44], data[45], data[46], data[47],
-            ]),
-            maximum_allocation_size: u64::from_le_bytes([
-                data[48], data[49], data[50], data[51], data[52], data[53], data[54], data[55],
-            ]),
-            virtual_memory_threshold: u64::from_le_bytes([
-                data[56], data[57], data[58], data[59], data[60], data[61], data[62], data[63],
-            ]),
-            process_affinity_mask: u64::from_le_bytes([
-                data[64], data[65], data[66], data[67], data[68], data[69], data[70], data[71],
-            ]),
-            process_heap_flags: u32::from_le_bytes([data[72], data[73], data[74], data[75]]),
-            csd_version: u16::from_le_bytes([data[76], data[77]]),
-            dependent_load_flags: u16::from_le_bytes([data[78], data[79]]),
-            edit_list: u64::from_le_bytes([
-                data[80], data[81], data[82], data[83], data[84], data[85], data[86], data[87],
-            ]),
-            security_cookie: u64::from_le_bytes([
-                data[88], data[89], data[90], data[91], data[92], data[93], data[94], data[95],
-            ]),
-            se_handler_table: u64::from_le_bytes([
-                data[96], data[97], data[98], data[99], data[100], data[101], data[102], data[103],
-            ]),
-            se_handler_count: u64::from_le_bytes([
-                data[104], data[105], data[106], data[107], data[108], data[109], data[110],
-                data[111],
-            ]),
-            ..Default::default()
-        };
-
-        // Parse each versioned CFG field that is present.
-        if data.len() >= 120 {
-            config.guard_cf_check_function_pointer = u64::from_le_bytes([
-                data[112], data[113], data[114], data[115], data[116], data[117], data[118],
-                data[119],
-            ]);
-        }
-        if data.len() >= 128 {
-            config.guard_cf_dispatch_function_pointer = u64::from_le_bytes([
-                data[120], data[121], data[122], data[123], data[124], data[125], data[126],
-                data[127],
-            ]);
-        }
-        if data.len() >= 136 {
-            config.guard_cf_function_table = u64::from_le_bytes([
-                data[128], data[129], data[130], data[131], data[132], data[133], data[134],
-                data[135],
-            ]);
-        }
-        if data.len() >= 144 {
-            config.guard_cf_function_count = u64::from_le_bytes([
-                data[136], data[137], data[138], data[139], data[140], data[141], data[142],
-                data[143],
-            ]);
-        }
-        if data.len() >= Self::SIZE_WITH_CFG {
-            config.guard_flags = u32::from_le_bytes([data[144], data[145], data[146], data[147]]);
-        }
-
-        if data.len() > Self::SIZE_WITH_CFG {
-            config.trailing_data = data[Self::SIZE_WITH_CFG..].to_vec();
-        }
-
-        Ok(config)
+            time_date_stamp: word(4)?,
+            major_version: half(8)?,
+            minor_version: half(10)?,
+            global_flags_clear: word(12)?,
+            global_flags_set: word(16)?,
+            critical_section_default_timeout: word(20)?,
+            de_commit_free_block_threshold: wide(24)?,
+            de_commit_total_free_threshold: wide(32)?,
+            lock_prefix_table: wide(40)?,
+            maximum_allocation_size: wide(48)?,
+            virtual_memory_threshold: wide(56)?,
+            process_affinity_mask: wide(64)?,
+            process_heap_flags: word(72)?,
+            csd_version: half(76)?,
+            dependent_load_flags: half(78)?,
+            edit_list: wide(80)?,
+            security_cookie: wide(88)?,
+            se_handler_table: wide(96)?,
+            se_handler_count: wide(104)?,
+            guard_cf_check_function_pointer: wide(112)?,
+            guard_cf_dispatch_function_pointer: wide(120)?,
+            guard_cf_function_table: wide(128)?,
+            guard_cf_function_count: wide(136)?,
+            guard_flags: word(144)?,
+            trailing_data: data.get(Self::SIZE_WITH_CFG..).unwrap_or_default().to_vec(),
+        })
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -764,5 +695,64 @@ mod tests {
         assert_eq!(original.size, parsed.size);
         assert_eq!(original.security_cookie, parsed.security_cookie);
         assert_eq!(original.guard_flags, parsed.guard_flags);
+    }
+
+    #[test]
+    fn legacy_prefixes_preserve_present_fields_and_omit_only_whole_fields() {
+        let mut early32 = vec![0; 60];
+        early32[..4].copy_from_slice(&60_u32.to_le_bytes());
+        early32[32..36].copy_from_slice(&0x401000_u32.to_le_bytes());
+        let parsed32 = LoadConfigDirectory32::parse(&early32).expect("a whole pre-cookie prefix");
+        assert_eq!(parsed32.lock_prefix_table, 0x401000);
+        assert_eq!(parsed32.security_cookie, 0);
+        assert_eq!(parsed32.se_handler_table, 0);
+        let mut cookie64 = vec![0; 96];
+        cookie64[..4].copy_from_slice(&96_u32.to_le_bytes());
+        cookie64[88..96].copy_from_slice(&0x1_4000_1000_u64.to_le_bytes());
+        let parsed64 = LoadConfigDirectory64::parse(&cookie64)
+            .expect("the cookie predates reserved SEH fields");
+        assert_eq!(parsed64.security_cookie, 0x1_4000_1000);
+        assert_eq!(parsed64.se_handler_table, 0);
+        assert_eq!(parsed64.guard_flags, 0);
+        cookie64[..4].fill(0);
+        assert_eq!(
+            LoadConfigDirectory64::parse(&cookie64)
+                .expect("legacy Size zero uses available bytes")
+                .security_cookie,
+            parsed64.security_cookie
+        );
+        let mut bounded = vec![0xff; 148];
+        bounded[..4].copy_from_slice(&4_u32.to_le_bytes());
+        let absent = LoadConfigDirectory64::parse(&bounded)
+            .expect("bytes beyond declared Size are not fields");
+        assert_eq!(absent.security_cookie, 0);
+        assert!(absent.trailing_data.is_empty());
+    }
+
+    #[test]
+    fn versioned_prefixes_reject_partial_fields_and_unreadable_declared_sizes() {
+        for size in [5_usize, 9, 53, 61, 65, 73, 89] {
+            let mut bytes = vec![0; size];
+            bytes[..4].copy_from_slice(&(size as u32).to_le_bytes());
+            assert!(
+                LoadConfigDirectory32::parse(&bytes).is_err(),
+                "partial PE32 field at Size {size}"
+            );
+        }
+        for size in [5_usize, 9, 25, 41, 77, 89, 97, 105, 113, 145] {
+            let mut bytes = vec![0; size];
+            bytes[..4].copy_from_slice(&(size as u32).to_le_bytes());
+            assert!(
+                LoadConfigDirectory64::parse(&bytes).is_err(),
+                "partial PE32+ field at Size {size}"
+            );
+        }
+        for declared in [1_u32, 3, 97] {
+            let mut bytes = vec![0; 96];
+            bytes[..4].copy_from_slice(&declared.to_le_bytes());
+            assert!(LoadConfigDirectory64::parse(&bytes).is_err());
+        }
+        assert!(LoadConfigDirectory32::parse(&[]).is_err());
+        assert!(LoadConfigDirectory64::parse(&[0; 3]).is_err());
     }
 }

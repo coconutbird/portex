@@ -16,6 +16,10 @@ mapped by a loader, because their RVA-to-source translations are different.
 - Imports, delay imports, bound imports, sparse/aliased exports, resources, base
   relocations, TLS, debug records, load configuration, and x64/ARM/ARM64
   exception tables.
+- Load configuration bounded by its declared size, including legacy prefixes.
+  A partial field is an error; an absent whole field remains zero.
+- x64 unwind serialization with a borrowed replacement language payload through
+  `UnwindInfo::try_to_bytes_with_handler_data`.
 - Rich headers plus the PE-level CLR/CLI header and raw metadata blob.
 - Lossless raw-file round trips through `PeFile`, including noncanonical gaps,
   certificate bytes, and arbitrary overlays when the layout is unchanged.
