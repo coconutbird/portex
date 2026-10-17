@@ -429,6 +429,18 @@ impl PeImage {
     }
 
     /// Parse the load config directory.
+    ///
+    /// The `Size` field of the structure bounds the bytes that this function
+    /// reads, as it does in the Windows loader. The size of the data directory
+    /// can differ from it: some linkers write `0x40` as the directory size of
+    /// a PE32 image whose structure has a `Size` of `0xC0`. When the structure
+    /// has a `Size` of zero, the directory size bounds the read.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the directory does not start in mapped bytes, if
+    /// the `Size` of the structure reaches past the mapped bytes, or if the
+    /// bytes do not parse as a load config structure.
     pub fn load_config(&self) -> Result<Option<crate::loadconfig::LoadConfigDirectory>> {
         use crate::data_dir::DataDirectoryType;
 
@@ -437,9 +449,23 @@ impl PeImage {
             .filter(|d| d.is_present());
         match dir {
             Some(d) => {
-                let data = self
-                    .read_rva(d.virtual_address, d.size as usize)
+                let header = self
+                    .read_rva(d.virtual_address, core::mem::size_of::<u32>())
                     .ok_or(crate::Error::invalid_rva(d.virtual_address))?;
+                let size = u32::from_le_bytes(
+                    header[..]
+                        .try_into()
+                        .expect("the read returned the four bytes of the Size field"),
+                );
+                let length = if size == 0 { d.size } else { size };
+                let data = self
+                    .read_rva(d.virtual_address, length as usize)
+                    .ok_or_else(|| {
+                        crate::Error::invalid_data_directory(format!(
+                            "load-config size {length} is outside the mapped bytes at RVA {:#x}",
+                            d.virtual_address
+                        ))
+                    })?;
                 Ok(Some(crate::loadconfig::LoadConfigDirectory::parse(
                     &data,
                     self.is_64bit(),
